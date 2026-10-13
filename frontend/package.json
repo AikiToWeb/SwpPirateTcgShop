@@ -1,0 +1,13 @@
+{
+  "name": "swp-pirate-tcg-shop",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "node scripts/build-rolling.mjs",
+    "build:rolling": "node scripts/build-rolling.mjs",
+    "preview": "vite preview --outDir rolling-dist --port 5175"
+  },
+  "devDependencies": { "vite": "^7.1.1" }
+}
