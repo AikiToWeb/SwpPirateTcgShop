@@ -13,3 +13,7 @@ backend/data/
 *.log
 .DS_Store
 Thumbs.db
+backend/target/
+.maven-cache/
+*.mv.db
+*.trace.db

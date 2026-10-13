@@ -5,9 +5,17 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "node scripts/build-rolling.mjs",
-    "build:rolling": "node scripts/build-rolling.mjs",
-    "preview": "vite preview --outDir rolling-dist --port 5175"
+    "build": "node scripts/build-react.mjs",
+    "build:rolling": "node scripts/build-react.mjs",
+    "preview": "vite preview --port 5175"
   },
-  "devDependencies": { "vite": "^7.1.1" }
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.2.0",
+    "esbuild": "^0.25.12",
+    "vite": "^7.1.1"
+  },
+  "dependencies": {
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0"
+  }
 }
