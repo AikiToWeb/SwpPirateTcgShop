@@ -18,6 +18,7 @@ public class KakaoAuth {
     private final ShopService s;
     private final String clientId,clientSecret;
     private final RestClient client;
+    @Value("${SHOP_ADMIN_KAKAO_ID:}") private String adminId;
     public KakaoAuth(ShopService s,@Value("${KAKAO_REST_API_KEY:}") String clientId,@Value("${KAKAO_CLIENT_SECRET:}") String secret){
         this.s=s;this.clientId=clientId;this.clientSecret=secret;
         var factory=new JdkClientHttpRequestFactory(HttpClient.newBuilder().connectTimeout(Duration.ofSeconds(15)).build());factory.setReadTimeout(Duration.ofSeconds(15));client=RestClient.builder().requestFactory(factory).build();
@@ -48,6 +49,7 @@ public class KakaoAuth {
         String name=nickname.substring(0,Math.min(nickname.length(),80)),session=s.token(),csrf=s.token();
         s.tx.executeWithoutResult(status->{
             s.jdbc.update("MERGE INTO shop_users(id,nickname) KEY(id) VALUES(?,?)",id,name);
+            if(id.equals(adminId))s.jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id=?",id);
             s.jdbc.update("DELETE FROM sessions WHERE expires<? OR token=?",s.now(),s.hash(s.cookie(req,"swp_session")));
             s.jdbc.update("INSERT INTO sessions VALUES(?,?,?,?)",s.hash(session),id,csrf,s.now()+604800);
         });

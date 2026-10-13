@@ -15,9 +15,10 @@ public class ShopController {
     public record Saved(boolean saved){}
     public ShopController(ShopService service,KakaoAuth auth){this.service=service;this.auth=auth;}
     @GetMapping("/health") public Map<String,Object> health(){return Map.of("status","ok","backend","Spring Boot","database","H2","kakao_configured",auth.configured());}
+    @GetMapping("/games") public Object games(){return service.jdbc.queryForList("SELECT name FROM games ORDER BY sort_order,name",String.class);}
     @GetMapping("/cards") public Object cards(){return service.cards();}
     @GetMapping("/events") public Object events(){return service.events();}
-    @GetMapping("/me") public Object me(HttpServletRequest req){var s=service.session(req,false);var result=new HashMap<String,Object>();result.put("user",s==null?null:Map.of("id",s.get("user_id"),"nickname",s.get("nickname")));result.put("csrf",s==null?null:s.get("csrf"));result.put("kakao_configured",auth.configured());return result;}
+    @GetMapping("/me") public Object me(HttpServletRequest req){var s=service.session(req,false);var result=new HashMap<String,Object>();result.put("user",s==null?null:Map.of("id",s.get("user_id"),"nickname",s.get("nickname"),"role",s.get("role")));result.put("csrf",s==null?null:s.get("csrf"));result.put("kakao_configured",auth.configured());return result;}
     @GetMapping("/auth/kakao") public ResponseEntity<Void> login(){return auth.login();}
     @GetMapping("/auth/callback") public ResponseEntity<Void> callback(HttpServletRequest req,@RequestParam(defaultValue="") String state,@RequestParam(defaultValue="") String code,@RequestParam(defaultValue="") String error){return auth.callback(req,state,code,error);}
     @PostMapping("/auth/logout") public ResponseEntity<?> logout(HttpServletRequest req){service.mutation(req);service.jdbc.update("DELETE FROM sessions WHERE token=?",service.hash(service.cookie(req,"swp_session")));return ResponseEntity.ok().header(HttpHeaders.SET_COOKIE,auth.cookie("swp_session","",0)).body(Map.of("ok",true));}
