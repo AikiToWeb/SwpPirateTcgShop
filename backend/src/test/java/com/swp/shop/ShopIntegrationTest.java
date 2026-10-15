@@ -15,7 +15,7 @@ import org.springframework.web.server.ResponseStatusException;
 import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest(properties={"spring.datasource.url=jdbc:h2:mem:shop-tests;DB_CLOSE_DELAY=-1","SHOP_IMPORT_ENABLED=false"})
+@SpringBootTest(properties={"spring.datasource.url=${TEST_DATABASE_URL:jdbc:h2:mem:shop-tests;DB_CLOSE_DELAY=-1}","SHOP_IMPORT_ENABLED=false"})
 @AutoConfigureMockMvc
 class ShopIntegrationTest {
     @Autowired ShopService shop;
@@ -123,5 +123,11 @@ class ShopIntegrationTest {
         web.perform(get("/shop-api/games")).andExpect(status().isOk())
             .andExpect(jsonPath("$[0]").value("DB 분류 확인"))
             .andExpect(jsonPath("$",org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("리프트바운드"))));
+    }
+    @Test void loginUserUpsertPreservesRole(){
+        jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id='one'");
+        shop.upsertUser("one","변경한 이름");shop.upsertUser("new-user","새 회원");shop.upsertUser("new-user","새 이름");
+        assertEquals("ADMIN",jdbc.queryForObject("SELECT role FROM shop_users WHERE id='one'",String.class));
+        assertEquals("새 이름",jdbc.queryForObject("SELECT nickname FROM shop_users WHERE id='new-user'",String.class));
     }
 }

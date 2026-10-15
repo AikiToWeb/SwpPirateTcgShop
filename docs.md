@@ -34,3 +34,12 @@
 - 서버 시작마다 이전 분류를 재등록하던 코드를 제거. 판매 탭·관리자 상품·일정 선택은 DB API 값 사용.
 - DB 변경 후 재시작해도 분류를 덮어쓰지 않는 테스트 포함, Java 통합 테스트 13개 통과. React 빌드 통과.
 - 실제 API와 브라우저에서 세 분류 표시 확인. 판매 상품은 0건 유지.
+
+## PostgreSQL / Neon 전환 준비
+
+- SWP shop 전용 Neon Free 프로젝트(싱가포르, PostgreSQL 18) 생성. TLS 인증서·호스트 검증으로 실제 연결 확인.
+- PostgreSQL JDBC, 서버 전용 사용자명 설정, 소규모 연결 풀 적용. Render의 PORT·바인딩 주소 설정 지원.
+- H2 전용 회원 upsert SQL 분기, 바인더·게임 분류 SQL 공통화, PostgreSQL의 소문자 열 이름에 대한 관리자 응답 호환 수정.
+- H2·별도 실제 PostgreSQL에서 각각 통합 테스트 14개 통과. React production 빌드 통과.
+- 별도 합성 데이터로 H2→PostgreSQL 이전 및 재실행 시 기존 데이터 덮어쓰기 거부 검증 완료.
+- 실제 H2 데이터의 Neon 이전·운영 연결 전환은 사용자 데이터 이전 선택 대기 중.

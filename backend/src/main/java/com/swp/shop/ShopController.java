@@ -14,7 +14,7 @@ public class ShopController {
     private final KakaoAuth auth;
     public record Saved(boolean saved){}
     public ShopController(ShopService service,KakaoAuth auth){this.service=service;this.auth=auth;}
-    @GetMapping("/health") public Map<String,Object> health(){return Map.of("status","ok","backend","Spring Boot","database","H2","kakao_configured",auth.configured());}
+    @GetMapping("/health") public Map<String,Object> health(){return Map.of("status","ok","backend","Spring Boot","database",service.postgres()?"PostgreSQL":"H2","kakao_configured",auth.configured());}
     @GetMapping("/games") public Object games(){return service.jdbc.queryForList("SELECT name FROM games ORDER BY sort_order,name",String.class);}
     @GetMapping("/cards") public Object cards(){return service.cards();}
     @GetMapping("/events") public Object events(){return service.events();}

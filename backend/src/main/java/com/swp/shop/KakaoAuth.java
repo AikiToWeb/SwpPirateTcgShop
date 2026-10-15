@@ -48,7 +48,7 @@ public class KakaoAuth {
         if(account.get("properties") instanceof Map<?,?> props)nickname=Objects.toString(props.get("nickname"),"회원");
         String name=nickname.substring(0,Math.min(nickname.length(),80)),session=s.token(),csrf=s.token();
         s.tx.executeWithoutResult(status->{
-            s.jdbc.update("MERGE INTO shop_users(id,nickname) KEY(id) VALUES(?,?)",id,name);
+            s.upsertUser(id,name);
             if(id.equals(adminId))s.jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id=?",id);
             s.jdbc.update("DELETE FROM sessions WHERE expires<? OR token=?",s.now(),s.hash(s.cookie(req,"swp_session")));
             s.jdbc.update("INSERT INTO sessions VALUES(?,?,?,?)",s.hash(session),id,csrf,s.now()+604800);

@@ -1,6 +1,8 @@
 # SWP Pirate TCG Shop
 
-Java 21 / Spring Boot 3.5 + React / Vite + H2 파일 DB 기반 카드 상점입니다.
+Java 21 / Spring Boot 3.5 + React / Vite 기반 카드 상점입니다. PostgreSQL(Neon) 연결과 기존 H2 파일 DB를 지원합니다.
+
+PostgreSQL 설정·데이터 보존 이전·DBeaver 접속은 [backend/POSTGRESQL.md](backend/POSTGRESQL.md)를 참고하세요.
 
 ## 실행
 
