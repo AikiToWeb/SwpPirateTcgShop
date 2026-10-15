@@ -77,14 +77,14 @@ class ShopIntegrationTest {
         web.perform(get("/shop-api/admin/products").cookie(new Cookie("swp_session","two"))).andExpect(status().isForbidden());
         jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id='one'");
         String product="""
-          {"product":{"id":"LIVE-001","name":"DB 등록 시험","en":"","set":"테스트 세트","game":"로카나","condition":"NM","language":"한국어","price":12500,"image":"","active":true},"stock":5}
+          {"product":{"id":"LIVE-001","name":"DB 등록 시험","en":"","set":"테스트 세트","game":"원피스 카드게임","condition":"NM","language":"한국어","price":12500,"image":"","active":true},"stock":5}
           """;
         web.perform(post("/shop-api/admin/products").cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content(product)).andExpect(status().isOk()).andExpect(jsonPath("$.price").value(12500));
         web.perform(post("/shop-api/admin/products/LIVE-001/stock").cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content("{\"delta\":2,\"expectedStock\":5,\"reason\":\"입고 확인\"}")).andExpect(status().isOk()).andExpect(jsonPath("$.stock").value(7));
         web.perform(post("/shop-api/admin/products/LIVE-001/stock").cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content("{\"delta\":2,\"expectedStock\":5,\"reason\":\"중복 입고\"}")).andExpect(status().isConflict());
         assertEquals(7,jdbc.queryForObject("SELECT stock FROM cards WHERE id='LIVE-001'",Integer.class));
         assertEquals(2,jdbc.queryForObject("SELECT COUNT(*) FROM stock_movements WHERE card_id='LIVE-001'",Integer.class));
-        assertTrue(shop.cards().stream().anyMatch(p->p.get("id").equals("LIVE-001")&&p.get("game").equals("로카나")));
+        assertTrue(shop.cards().stream().anyMatch(p->p.get("id").equals("LIVE-001")&&p.get("game").equals("원피스 카드게임")));
         web.perform(get("/shop-api/admin/summary").cookie(new Cookie("swp_session","one"))).andExpect(status().isOk()).andExpect(jsonPath("$.tables.stock_movements").value(2));
     }
     @Test void fulfilledOrderCannotBeCancelled() throws Exception {
@@ -96,7 +96,7 @@ class ShopIntegrationTest {
     @Test void sampleRequiresPhysicalStockConfirmation() throws Exception {
         jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id='one'");jdbc.update("UPDATE cards SET is_sample=TRUE,active=FALSE WHERE id='test-card'");
         String product="""
-          {"id":"test-card","name":"확인한 실제 상품","en":"","set":"세트","game":"로카나","condition":"NM","language":"한국어","price":10000,"image":"","active":true}
+          {"id":"test-card","name":"확인한 실제 상품","en":"","set":"세트","game":"원피스 카드게임","condition":"NM","language":"한국어","price":10000,"image":"","active":true}
           """;
         web.perform(put("/shop-api/admin/products/test-card").cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content(product)).andExpect(status().isUnprocessableEntity());
         assertTrue(shop.cards().isEmpty());
@@ -106,11 +106,22 @@ class ShopIntegrationTest {
     }
     @Test void managedEventsAreStoredAndPublished() throws Exception {
         jdbc.update("UPDATE shop_users SET role='ADMIN' WHERE id='one'");
-        String event="{\"game\":\"로카나\",\"title\":\"일정 등록 검증\",\"startsAt\":\"2026-10-14T19:30:00\",\"description\":\"검증용\",\"active\":true}";
+        String event="{\"game\":\"원피스 카드게임\",\"title\":\"일정 등록 검증\",\"startsAt\":\"2026-10-14T19:30:00\",\"description\":\"검증용\",\"active\":true}";
         web.perform(post("/shop-api/admin/events").cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content(event)).andExpect(status().isOk());
         web.perform(get("/shop-api/events")).andExpect(jsonPath("$[0].title").value("일정 등록 검증"));
         long id=jdbc.queryForObject("SELECT id FROM shop_events",Long.class);
         web.perform(put("/shop-api/admin/events/"+id).cookie(new Cookie("swp_session","one")).header("Origin",origin).header("X-CSRF-Token","csrf-one").contentType("application/json").content(event.replace("\"active\":true","\"active\":false"))).andExpect(status().isOk());
         assertTrue(shop.events().isEmpty());assertEquals(1,jdbc.queryForObject("SELECT COUNT(*) FROM shop_events",Integer.class));
+    }
+    @Autowired DatabaseBootstrap bootstrap;
+    @Test
+    @org.springframework.transaction.annotation.Transactional
+    void categoriesAreReadFromDatabaseAndNotResetOnStartup() throws Exception {
+        jdbc.update("INSERT INTO games(name,sort_order) VALUES('DB 분류 확인',-1)");
+        jdbc.update("DELETE FROM games WHERE name='리프트바운드'");
+        bootstrap.run(null);
+        web.perform(get("/shop-api/games")).andExpect(status().isOk())
+            .andExpect(jsonPath("$[0]").value("DB 분류 확인"))
+            .andExpect(jsonPath("$",org.hamcrest.Matchers.not(org.hamcrest.Matchers.hasItem("리프트바운드"))));
     }
 }

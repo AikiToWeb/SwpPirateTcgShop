@@ -11,6 +11,9 @@ import org.springframework.boot.ApplicationArguments;
 import org.springframework.boot.ApplicationRunner;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.jdbc.core.JdbcTemplate;
+import org.springframework.jdbc.core.ConnectionCallback;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
@@ -41,8 +44,13 @@ public class DatabaseBootstrap implements ApplicationRunner {
             });
         }
         tx.executeWithoutResult(status->{
-            String[] games={"매직 더 개더링","리프트바운드","플레시 앤 블러드","로카나"};
-            for(int i=0;i<games.length;i++)jdbc.update("INSERT INTO games(name,sort_order) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM games WHERE name=?)",games[i],i,games[i]);
+            if(jdbc.queryForObject("SELECT COUNT(*) FROM migration_history WHERE name='game-categories-v3'",Integer.class)==0){
+                jdbc.execute((ConnectionCallback<Void>) connection -> {
+                    new ResourceDatabasePopulator(new ClassPathResource("db/game-categories-v3.sql")).populate(connection);
+                    return null;
+                });
+                jdbc.update("INSERT INTO migration_history VALUES('game-categories-v3',?)",Instant.now().getEpochSecond());
+            }
             if(jdbc.queryForObject("SELECT COUNT(*) FROM migration_history WHERE name='operational-v2'",Integer.class)==0){
                 jdbc.update("UPDATE cards SET is_sample=TRUE,active=FALSE WHERE created=0 AND id IN ('M13-224','ISD-239','M12-219','M13-212')");
                 jdbc.update("UPDATE shop_orders SET is_sample=TRUE WHERE id IN (SELECT oi.order_id FROM order_items oi JOIN cards c ON c.id=oi.card_id WHERE c.is_sample=TRUE)");

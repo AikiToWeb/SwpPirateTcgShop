@@ -5,7 +5,6 @@ import AdminPanel from './AdminPanel.jsx';
 
 const won = n => `${Number(n).toLocaleString('ko-KR')}원`;
 const image = p => p.image ? (p.image.startsWith('https://') ? p.image : `/rolling-assets/${p.image}`) : '/swp-assets/card-placeholder.svg';
-const marks = ['✳', '◈', '✥', '✧'];
 function stored(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function store(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
 
@@ -73,7 +72,7 @@ function App() {
     setLoading(true); setError('');
     try {
       const [products, me, schedule, classifications] = await Promise.all([api('/cards'), api('/me'), api('/events'), api('/games')]);
-      setGames(classifications); setGame(g => g || classifications[0] || '');
+      setGames(classifications); setGame(g => classifications.includes(g) ? g : classifications[0] || '');
       csrf.current = me.csrf; setCards(products); setAccount(me); setEvents(schedule);
       if (me.user) {
         const [collection, basket] = await Promise.all([api('/binder'), api('/cart')]);
@@ -151,7 +150,7 @@ function App() {
     </header>
     <main><section className="shop wrap" id="shop" aria-labelledby="shop-title">
       <div className="section-heading"><h1 id="shop-title">{binder ? '내 바인더' : '최신 등록 카드'} <span className="count">{String(visible.length).padStart(2, '0')}</span></h1><button className="refresh" disabled={busy || loading} onClick={() => action(async () => { setCards(await api('/cards')); setToast('상품 정보 갱신 완료'); })}>새로고침 ↻</button></div>
-      <div className="game-tabs" role="group" aria-label="게임 선택">{games.map((g, i) => <button key={g} aria-pressed={g === game} onClick={() => setGame(g)}><span className="game-mark">{marks[i]}</span>{g}</button>)}</div>
+      <div className="game-tabs" role="group" aria-label="게임 선택">{games.map(g => <button key={g} aria-pressed={g === game} onClick={() => setGame(g)}>{g}</button>)}</div>
       <div className="tools"><label className="search"><span aria-hidden="true">⌕</span><input ref={searchRef} type="search" aria-label="카드 검색" placeholder="카드명 · 세트 코드 검색" value={search} onChange={e => setSearch(e.target.value)} /><kbd>/</kbd></label><div className="filters"><label className="checkbox"><input type="checkbox" checked={available} onChange={e => setAvailable(e.target.checked)} />재고 있는 카드</label><select aria-label="정렬" value={sort} onChange={e => setSort(e.target.value)}><option value="recent">최근 등록순</option><option value="low">낮은 가격순</option><option value="high">높은 가격순</option><option value="name">이름순</option></select></div></div>
       <div className="product-grid">{loading ? <div className="empty" role="status">상품 불러오는 중</div> : error ? <div className="empty" role="alert"><p>{error}</p><button onClick={initialize}>다시 연결</button></div> : visible.length ? visible.map((p, i) => <ProductCard key={p.id} product={p} number={i + 1} saved={saved.includes(p.id)} busy={busy} save={() => save(p)} add={() => add(p)} detail={() => setModal({ type: 'detail', id: p.id })} />) : <div className="empty"><p>{binder ? '저장된 카드가 없습니다.' : cards.length ? '조건에 맞는 상품이 없습니다.' : '등록된 상품이 없습니다.'}</p>{cards.length > 0 && <button onClick={reset}>전체 카드 보기 ↗</button>}</div>}</div>
       <div className="shelf-foot"><button onClick={() => setModal({ type: 'info', title: 'NM · Near Mint', text: '표면과 모서리의 손상이 매우 적은 상태입니다. 상품별 컨디션을 확인하세요.' })}>카드 컨디션 안내 ↗</button></div>
