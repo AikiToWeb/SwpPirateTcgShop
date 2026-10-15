@@ -42,4 +42,7 @@
 - H2 전용 회원 upsert SQL 분기, 바인더·게임 분류 SQL 공통화, PostgreSQL의 소문자 열 이름에 대한 관리자 응답 호환 수정.
 - H2·별도 실제 PostgreSQL에서 각각 통합 테스트 14개 통과. React production 빌드 통과.
 - 별도 합성 데이터로 H2→PostgreSQL 이전 및 재실행 시 기존 데이터 덮어쓰기 거부 검증 완료.
-- 실제 H2 데이터의 Neon 이전·운영 연결 전환은 사용자 데이터 이전 선택 대기 중.
+- 사용자 승인 후 H2 원본을 `data/swp.before-neon-20261015.mv.db`로 백업하고 Neon으로 이전 완료. 원본 H2 보존.
+- games 3, shop_users 1, sessions 1, migration_history 2건 보존 확인. 상품·주문·일정·입출고 등은 0건 유지.
+- `.env.shop`을 Neon으로 전환하고 실제 health API가 PostgreSQL을 보고함. 실제 카카오 로그아웃·재로그인과 관리자 DB 화면 확인 완료.
+- Render 배포는 아직 진행하지 않음. 현재 웹/API는 로컬에서 실행하고 DB만 Neon 사용.
