@@ -50,3 +50,13 @@ CREATE TABLE IF NOT EXISTS stock_movements (
   reason VARCHAR(300) NOT NULL, order_id VARCHAR(40), created BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_stock_card ON stock_movements(card_id,created);
+CREATE TABLE IF NOT EXISTS price_reference_checks (
+  id VARCHAR(36) PRIMARY KEY,
+  actor_id VARCHAR(80) NOT NULL REFERENCES shop_users(id),
+  product_name VARCHAR(200) NOT NULL, product_set VARCHAR(200) NOT NULL,
+  product_type VARCHAR(20) NOT NULL, unit_count INTEGER NOT NULL CHECK(unit_count>0),
+  status VARCHAR(30) NOT NULL, recommended_price BIGINT CHECK(recommended_price>0),
+  selected_source VARCHAR(30), checked_at VARCHAR(40) NOT NULL, result_json TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_price_reference_actor ON price_reference_checks(actor_id,checked_at);
+ALTER TABLE price_reference_checks ADD COLUMN IF NOT EXISTS request_json TEXT;

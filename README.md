@@ -37,7 +37,7 @@ API: http://127.0.0.1:8001/shop-api/health
 
 신규 DB는 판매 상품과 일정이 없는 상태로 시작합니다. 자동 예시 입력 코드는 없습니다. 기존 카드 4장과 예시 일정·주문은 보관 영역으로 분리하여 판매 화면과 고객 주문 내역에 노출하지 않습니다. 이전 DB 파일은 백업했으며 데이터 및 키 파일은 Git에서 제외합니다. 실제 판매 상품은 관리자 화면에서 등록합니다.
 
-`data/legacy-import.json`이 존재하면 비어 있는 H2 DB에 한 번만 이전하며, migration_history에 기록합니다. 이미 데이터가 있는 DB를 덮어쓰지 않습니다. H2 콘솔은 공개하지 않습니다. 스키마 정의는 `backend/src/main/resources/schema.sql`이며 현재 games, cards, shop_users, sessions, oauth_states, binders, carts, shop_orders, order_items, stock_movements, shop_events, migration_history 테이블을 생성합니다.
+`data/legacy-import.json`이 존재하면 비어 있는 H2 DB에 한 번만 이전하며, migration_history에 기록합니다. 이미 데이터가 있는 DB를 덮어쓰지 않습니다. H2 콘솔은 공개하지 않습니다. 스키마 정의는 `backend/src/main/resources/schema.sql`이며 현재 games, cards, shop_users, sessions, oauth_states, binders, carts, shop_orders, order_items, stock_movements, shop_events, migration_history, price_reference_checks 테이블을 생성합니다.
 
 ## 기능
 
@@ -51,6 +51,16 @@ API: http://127.0.0.1:8001/shop-api/health
 주문은 개발용 매장 수령 접수입니다. 온라인 결제·배송·실제 매장 재고·알림 발송은 연동하지 않습니다.
 
 ## 관리자 운영
+
+### 판매가와 참조 기본가격
+
+상품 등록·수정에서 판매가를 직접 입력하거나 **참조 기본값 조회 → 기본가격 적용 → 저장** 순서로 설정할 수 있습니다. 조회만으로 기존 판매가를 바꾸거나 주기적으로 덮어쓰지 않습니다.
+
+관리자용 `POST /shop-api/admin/pricing/quote`는 매핑한 롤링다이스·카드냥 페이지에서 동일 상품·언어·컨디션·판매 단위를 확인하고 유효 후보 중 낮은 가격을 반환합니다. 매핑 누락·오류·품절·불명확한 옵션은 구분해 표시하며, 검증되지 않은 가격을 0원이나 최저가로 적용하지 않습니다. 조회 출처·판단 결과·시각은 DB에 기록합니다.
+
+두 사이트의 동일 상품 미취급을 관리자가 확인한 경우에만 네이버 스마트스토어 수동 참조를 사용합니다. 네이버 쇼핑 검색 API는 2026-07-31 종료되어 호출하지 않습니다. 스마트스토어 상품 URL, 직접 확인한 가격, 옵션 일치 확인, 최근 24시간 내 확인 시각을 입력해야 하며 자동 조회한 가격으로 표시하지 않습니다. 네이버 전체 검색 크롤러와 스마트스토어 자동 수집기는 현재 포함하지 않습니다.
+
+상세 정책·지원 범위·예외는 [가격 참조 안내](docs/price-reference.md)를 확인하세요.
 
 서버 전용 `.env.shop`에 `SHOP_ADMIN_KAKAO_ID`로 카카오 회원번호를 지정합니다. 이 설정과 회원 DB는 Git에 포함되지 않으므로 새 PC에서는 최초 로그인 후 관리자 설정이 필요합니다. 다른 회원은 관리자 API 접근 시 403을 반환합니다.
 

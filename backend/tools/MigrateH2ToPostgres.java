@@ -4,7 +4,7 @@ import java.util.*;
 
 /** Offline copy into an empty PostgreSQL database. Never modifies the H2 source. */
 public class MigrateH2ToPostgres {
-    static final List<String> TABLES=List.of("games","cards","shop_users","sessions","oauth_states","binders","carts","shop_orders","order_items","stock_movements","shop_events","migration_history");
+    static final List<String> TABLES=List.of("games","cards","shop_users","sessions","oauth_states","binders","carts","shop_orders","order_items","stock_movements","shop_events","migration_history","price_reference_checks");
     static Map<String,String> config(Path path) throws Exception {
         var result=new HashMap<String,String>();
         for(String line:Files.readAllLines(path)){int n=line.indexOf('=');if(n>0&&!line.stripLeading().startsWith("#"))result.put(line.substring(0,n).trim(),line.substring(n+1).trim());}
@@ -26,6 +26,8 @@ public class MigrateH2ToPostgres {
                 for(String table:TABLES)try(var q=dest.createStatement();var rows=q.executeQuery("SELECT COUNT(*) FROM "+table)){rows.next();if(rows.getLong(1)!=0)throw new IllegalStateException("Target must be empty: "+table);}
                 for(String table:TABLES){
                     long count=0;
+                    // Databases created before price references have no audit table; preserve the source unchanged.
+                    if(table.equals("price_reference_checks")&&!hasTable(source,table)){System.out.println(table+": 0 (not present in legacy source)");continue;}
                     try(var select=source.createStatement();var rows=select.executeQuery("SELECT * FROM "+table)){
                         var meta=rows.getMetaData();int n=meta.getColumnCount();var columns=new ArrayList<String>();
                         for(int i=1;i<=n;i++)columns.add(meta.getColumnName(i).toLowerCase(Locale.ROOT));
@@ -39,5 +41,11 @@ public class MigrateH2ToPostgres {
                 dest.commit();System.out.println("Migration committed; H2 source preserved.");
             }catch(Exception failure){dest.rollback();throw new IllegalStateException("Migration rolled back; target data was not overwritten.");}
         }catch(SQLException failure){throw new IllegalStateException("Database connection or schema initialization failed; check local configuration without printing credentials.");}
+    }
+    static boolean hasTable(Connection connection,String name) throws SQLException {
+        try(var tables=connection.getMetaData().getTables(null,null,null,new String[]{"TABLE"})){
+            while(tables.next())if(name.equalsIgnoreCase(tables.getString("TABLE_NAME")))return true;
+        }
+        return false;
     }
 }
