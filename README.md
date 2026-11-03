@@ -11,6 +11,10 @@ PostgreSQL 설정·데이터 보존 이전·DBeaver 접속은 [backend/POSTGRESQ
 
 ## 실행
 
+매장 PC 설치형 프로그램은 별도 [inventory-desktop 프로젝트](inventory-desktop/README.md)에 있습니다. 로컬 테스트 DB와 실제 매장 연결 모드를 구분하며, 매장 모드에서는 이 서버의 재고·주문·취소 이력을 함께 사용합니다. 웹 상점 관리의 **재고관리 앱**에서 일회성 연결 코드를 발급합니다. 스마트스토어 개설·상품 매핑·초기 기준 검수·서버 설정·배포 범위는 [통합 운영 안내](docs/inventory-integration.md)를 확인하세요. 실제 네이버 스토어와 API 키가 준비되기 전에는 실연동 완료로 간주하지 않습니다.
+
+웹 화면과 API를 하나의 JAR로 묶으려면 저장소 루트에서 `./scripts/build-shop.ps1`을 실행합니다. Docker 배포 구성은 루트 `Dockerfile`에 있습니다. 공개 호스팅·도메인 설정은 별도로 필요합니다.
+
 Java 21+, Maven 3.9+, Node.js 22.12+가 필요합니다. 두 터미널에서 실행합니다.
 
 ```powershell

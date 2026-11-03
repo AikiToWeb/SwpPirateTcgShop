@@ -1,22 +1,20 @@
 import React, { useEffect, useRef, useState } from 'react';
+import StoreConnection from './StoreConnection.jsx';
+import SmartStorePanel from './SmartStorePanel.jsx';
+import { request as call } from './bridge.js';
 
 const MAX_STOCK = 99999999;
 const PAGE_SIZE = 25;
 const formatNumber = value => new Intl.NumberFormat('ko-KR').format(value ?? 0);
-const formatDate = value => value ? new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—';
-const typeLabels = { INITIAL: '초기 등록', IN: '입고', OUT: '출고', ADJUST: '실사 조정' };
+const formatDate = value => {
+  if (!value) return '—';
+  const numeric = typeof value === 'number' ? value : /^\d+$/.test(String(value)) ? Number(value) : null;
+  const date = new Date(numeric == null ? value : numeric < 1e12 ? numeric * 1000 : numeric);
+  return Number.isNaN(date.getTime()) ? '시각 확인 필요' : new Intl.DateTimeFormat('ko-KR', { dateStyle: 'medium', timeStyle: 'short' }).format(date);
+};
+const typeLabels = { INITIAL: '초기 등록', IN: '입고', OUT: '출고', ADJUST: '실사 조정', ORDER: '주문 차감', CANCEL: '주문 취소' };
 const freshProduct = () => ({ sku: '', name: '', setName: '', language: '', condition: '', unit: '개', initialStock: '0' });
 
-async function call(method, args) {
-  if (!window.inventory?.[method]) throw new Error('설치형 프로그램에서 실행해 주세요. 재고 DB에 연결할 수 없습니다.');
-  const result = await window.inventory[method](args);
-  if (!result?.ok) {
-    const error = new Error(result?.error?.message || '처리하지 못했습니다. 다시 시도해 주세요.');
-    error.code = result?.error?.code;
-    throw error;
-  }
-  return result.data;
-}
 
 function Icon({ name, size = 20 }) {
   const paths = {
@@ -47,6 +45,10 @@ export default function App() {
   const [view, setView] = useState('inventory');
   const [appInfo, setAppInfo] = useState(null);
   const [overview, setOverview] = useState(null);
+  const [connection, setConnection] = useState(null);
+  const [connectionReady, setConnectionReady] = useState(false);
+  const [connectionBusy, setConnectionBusy] = useState(false);
+  const [integrationBusy, setIntegrationBusy] = useState(false);
   const [products, setProducts] = useState([]);
   const [productTotal, setProductTotal] = useState(0);
   const [searchInput, setSearchInput] = useState('');
@@ -68,16 +70,22 @@ export default function App() {
   const [showRegistration, setShowRegistration] = useState(false);
   const listRequest = useRef(0);
   const historyRequest = useRef(0);
+  const connectionLock = useRef(false);
+  const isStore = connection?.mode === 'store';
+  const workspaceBusy = stockBusy || backupBusy || connectionBusy || integrationBusy;
+  const canMutate = connectionReady && !connectionBusy;
+  const viewTitles = { inventory: '상품 재고', history: '입출고 이력', connection: '매장 서버 연결', smartstore: '스마트스토어' };
 
   const refresh = () => setRefreshKey(key => key + 1);
 
   useEffect(() => {
     let active = true;
-    call('getAppInfo').then(data => { if (active) setAppInfo(data); }).catch(error => { if (active) setNotice({ kind: 'error', text: error.message }); });
+    Promise.all([call('getAppInfo'), call('getConnection')]).then(([info, current]) => { if (active) { setAppInfo(info); setConnection(current); setConnectionReady(true); } }).catch(error => { if (active) setNotice({ kind: 'error', text: error.message }); });
     return () => { active = false; };
   }, []);
 
   useEffect(() => {
+    if (!connectionReady || connectionBusy) return;
     const request = ++listRequest.current;
     setLoading(true);
     setLoadError('');
@@ -92,10 +100,11 @@ export default function App() {
       })
       .catch(error => { if (request === listRequest.current) setLoadError(error.message); })
       .finally(() => { if (request === listRequest.current) setLoading(false); });
-  }, [query, page, refreshKey]);
+    return () => { listRequest.current++; };
+  }, [query, page, refreshKey, connectionReady, connectionBusy]);
 
   useEffect(() => {
-    if (view !== 'history') {
+    if (view !== 'history' || !connectionReady || connectionBusy) {
       setHistoryLoading(false);
       return;
     }
@@ -111,20 +120,45 @@ export default function App() {
       .catch(error => { if (request === historyRequest.current) setHistoryError(error.message); })
       .finally(() => { if (request === historyRequest.current) setHistoryLoading(false); });
     return () => { historyRequest.current++; };
-  }, [view, historyProduct?.id, historyPage, refreshKey]);
+  }, [view, historyProduct?.id, historyPage, refreshKey, connectionReady, connectionBusy]);
 
   function openHistory(product = null) {
     setHistoryProduct(product); setHistoryPage(0); setView('history');
   }
 
   async function backup() {
-    if (backupBusy) return;
+    if (workspaceBusy || !canMutate || isStore) return;
     setBackupBusy(true);
     try {
       const result = await call('backupDatabase');
       if (!result.canceled) setNotice({ kind: 'success', text: `DB 백업을 저장했습니다. ${result.path || ''}` });
     } catch (error) { setNotice({ kind: 'error', text: error.message }); }
     finally { setBackupBusy(false); }
+  }
+
+  async function changeConnection(method, args) {
+    if (connectionLock.current || workspaceBusy || showRegistration) throw new Error('현재 작업이 끝난 후 모드를 전환해 주세요.');
+    connectionLock.current = true; setConnectionBusy(true); setConnectionReady(false);
+    listRequest.current++; historyRequest.current++;
+    try {
+      const result = await call(method, args);
+      setProducts([]); setProductTotal(0); setOverview(null); setSelected(null);
+      setHistory([]); setHistoryTotal(0); setHistoryProduct(null); setHistoryPage(0);
+      setSearchInput(''); setQuery(''); setPage(0); setNotice(null); setLoadError(''); setHistoryError('');
+      setConnection(result);
+      const info = await call('getAppInfo');
+      setAppInfo(info); setConnectionReady(true); refresh();
+      return result;
+    } catch (failure) {
+      try {
+        const [current, info] = await Promise.all([call('getConnection'), call('getAppInfo')]);
+        setConnection(current); setAppInfo(info); setConnectionReady(true);
+        setProducts([]); setProductTotal(0); setOverview(null); setSelected(null);
+        setHistory([]); setHistoryTotal(0); setHistoryProduct(null); setHistoryPage(0);
+        setSearchInput(''); setQuery(''); setPage(0); refresh();
+      } catch { setConnectionReady(false); }
+      throw failure;
+    } finally { connectionLock.current = false; setConnectionBusy(false); }
   }
 
   function registered(product) {
@@ -135,41 +169,45 @@ export default function App() {
   return <div className="app-shell">
     <aside className="sidebar">
       <div className="brand"><span className="brand-mark">SWP</span><span>재고관리</span></div>
-      <div className="store-label">매장 PC · 로컬 재고</div>
+      <div className="store-label">{isStore ? '매장 서버 · 실제 재고' : '매장 PC · 로컬 테스트'}</div>
       <nav aria-label="주 메뉴">
-        <button className={`nav-item ${view === 'inventory' ? 'active' : ''}`} disabled={stockBusy} onClick={() => setView('inventory')}><Icon name="box" />상품 재고<Icon name="arrow" size={15} /></button>
-        <button className={`nav-item ${view === 'history' ? 'active' : ''}`} disabled={stockBusy} onClick={() => openHistory()}><Icon name="history" />입출고 이력<Icon name="arrow" size={15} /></button>
+        <button className={`nav-item ${view === 'inventory' ? 'active' : ''}`} disabled={workspaceBusy} onClick={() => setView('inventory')}><Icon name="box" />상품 재고<Icon name="arrow" size={15} /></button>
+        <button className={`nav-item ${view === 'history' ? 'active' : ''}`} disabled={workspaceBusy} onClick={() => openHistory()}><Icon name="history" />입출고 이력<Icon name="arrow" size={15} /></button>
+        <button className={`nav-item ${view === 'smartstore' ? 'active' : ''}`} disabled={workspaceBusy || !isStore || !connectionReady} onClick={() => setView('smartstore')}><Icon name="refresh" />스마트스토어<Icon name="arrow" size={15} /></button>
+        <button className={`nav-item ${view === 'connection' ? 'active' : ''}`} disabled={workspaceBusy} onClick={() => setView('connection')}><Icon name="info" />매장 서버 연결<Icon name="arrow" size={15} /></button>
       </nav>
       <div className="sidebar-bottom">
-        <div className="connection"><span className="connection-dot" /><div><strong>로컬 테스트 DB</strong><span>스마트스토어 미연동</span></div></div>
-        <button className="backup-button" onClick={backup} disabled={backupBusy}><Icon name="backup" size={18} />{backupBusy ? '백업 저장 중…' : 'DB 백업 저장'}</button>
+        <div className="connection"><span className="connection-dot" /><div><strong>{isStore ? '매장 서버 모드' : '로컬 테스트 DB'}</strong><span>{isStore ? appInfo?.smartStoreConnected ? '스마트스토어 연결 확인됨' : '스마트스토어 연결 확인 필요' : '스마트스토어 미연동'}</span></div></div>
+        <button className="backup-button" onClick={backup} disabled={workspaceBusy || isStore || !canMutate}><Icon name="backup" size={18} />{isStore ? '서버 백업은 서버에서 관리' : backupBusy ? '백업 저장 중…' : 'DB 백업 저장'}</button>
         <span className="app-version">버전 {appInfo?.version || '—'}</span>
       </div>
     </aside>
 
     <main className="main-content">
-      <header className="page-header"><div><div className="eyebrow">매장 재고</div><h1>{view === 'inventory' ? '상품 재고' : '입출고 이력'}</h1></div><div className="header-actions"><span className="test-badge">테스트 DB</span><button className="button secondary icon-button" aria-label="데이터 새로고침" title="새로고침" onClick={refresh} disabled={stockBusy || (view === 'history' ? historyLoading : loading)}><Icon name="refresh" /></button><button className="button primary" disabled={stockBusy} onClick={() => setShowRegistration(true)}><Icon name="plus" size={18} />상품 등록</button></div></header>
+      <header className="page-header"><div><div className="eyebrow">매장 재고</div><h1>{viewTitles[view]}</h1></div><div className="header-actions"><span className={isStore ? "live-badge" : "test-badge"}>{!connectionReady ? "연결 확인 필요" : isStore ? "매장 · 실제 재고" : "테스트 DB"}</span><button className="button secondary icon-button" aria-label="데이터 새로고침" title="새로고침" onClick={() => !connectionReady ? changeConnection("getConnection").catch(error => setNotice({ kind: "error", text: error.message })) : refresh()} disabled={workspaceBusy || (connectionReady && (view === "history" ? historyLoading : (view === "inventory" ? loading : false)))}><Icon name="refresh" /></button><button className="button primary" title={isStore ? "매장 상품 등록은 SWP 상점 관리에서 진행하세요" : undefined} disabled={workspaceBusy || isStore || !canMutate} onClick={() => setShowRegistration(true)}><Icon name="plus" size={18} />상품 등록</button></div></header>
 
-      <div className="environment-note"><Icon name="info" size={17} /><span>기존 SWP store와 분리된 테스트 DB입니다. 변경한 수량은 스마트스토어에 전송되지 않습니다.</span></div>
+      <div className="environment-note"><Icon name="info" size={17} /><span>{!connectionReady ? '저장소 연결 상태를 확인하지 못했습니다. 새로고침하거나 매장 서버 연결 화면을 확인하세요.' : isStore ? '매장 모드입니다. 재고 변경은 SWP 서버의 실제 상품 원장에 저장됩니다. 스마트스토어 반영 여부는 동기화 결과에서 확인하세요.' : '기존 SWP store와 분리된 테스트 DB입니다. 변경한 수량은 스마트스토어에 전송되지 않습니다.'}</span></div>
 
       {notice && <div className={`notice ${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}><span>{notice.text}</span><button aria-label="알림 닫기" onClick={() => setNotice(null)}><Icon name="close" size={17} /></button></div>}
 
-      <section className="stats-grid" aria-label="전체 재고 요약"><Stat label="등록 상품" value={overview?.productCount} suffix="종" /><Stat label="전체 재고 수량" value={overview?.totalStock} suffix="단위" hint="각 상품의 판매 단위 수량 합계" /><Stat label="재고 없음" value={overview?.outOfStockCount} suffix="종" warning /><Stat label="재고 변경 이력" value={overview?.movementCount} suffix="건" /></section>
+      {(view === 'inventory' || view === 'history') && <section className="stats-grid" aria-label="전체 재고 요약"><Stat label="등록 상품" value={overview?.productCount} suffix="종" /><Stat label="전체 재고 수량" value={overview?.totalStock} suffix="단위" hint="각 상품의 판매 단위 수량 합계" /><Stat label="재고 없음" value={overview?.outOfStockCount} suffix="종" warning /><Stat label="재고 변경 이력" value={overview?.movementCount} suffix="건" /></section>}
 
+      {view === 'connection' && <StoreConnection connection={connection} ready={connectionReady} busy={workspaceBusy} onAction={changeConnection} />}
+      {view === 'smartstore' && isStore && connectionReady && <SmartStorePanel refreshKey={refreshKey} key={connection?.serverUrl} onBusyChange={setIntegrationBusy} onStatus={status => setAppInfo(current => current ? { ...current, smartStoreConnected: Boolean(status.connected) } : current)} />}
       {view === 'inventory' ? <div className={`inventory-layout ${selected ? 'with-detail' : ''}`}>
         <section className="panel catalogue-panel" aria-label="상품 목록">
-          <div className="panel-heading"><h2>상품 목록 <span>{formatNumber(productTotal)}</span></h2>{query && <button className="text-button" onClick={() => { if (stockBusy) return; setSearchInput(''); setQuery(''); setPage(0); }}>검색 초기화</button>}</div>
-          <form className="search-form" role="search" onSubmit={event => { event.preventDefault(); if (stockBusy) return; setPage(0); setQuery(searchInput.trim()); }}><div className="search-input"><Icon name="search" size={19} /><input aria-label="상품명, 상품 코드 또는 세트 검색" placeholder="상품명, 상품 코드, 세트 검색" maxLength={200} value={searchInput} onChange={event => setSearchInput(event.target.value)} /><kbd>Enter</kbd></div><button className="button secondary" type="submit" disabled={loading || stockBusy}>검색</button></form>
-          {loadError ? <div className="section-error" role="alert"><p>{loadError}</p><button className="button secondary" onClick={refresh}>다시 시도</button></div> : loading ? <div className="loading-state" role="status">상품을 불러오는 중…</div> : products.length === 0 ? <EmptyState title={query ? '검색 결과가 없습니다' : '등록된 상품이 없습니다'} description={query ? '상품명, 상품 코드 또는 세트를 확인해 주세요.' : '상품을 등록하면 재고와 입출고 이력을 관리할 수 있습니다.'}>{!query && <button className="button primary" disabled={stockBusy} onClick={() => setShowRegistration(true)}><Icon name="plus" size={17} />첫 상품 등록</button>}</EmptyState> : <div className="table-scroll"><table className="product-table"><thead><tr><th scope="col">상품</th><th scope="col">구분</th><th scope="col" className="number-cell">재고</th><th scope="col" className="action-cell">관리</th></tr></thead><tbody>{products.map(product => <tr key={product.id} className={selected?.id === product.id ? 'selected-row' : ''}><td><button className="product-name" disabled={stockBusy} onClick={() => setSelected(product)}>{product.name}</button><span className="product-code">{product.sku}{product.setName ? ` · ${product.setName}` : ''}</span></td><td><div className="product-meta">{[product.language, product.condition].filter(Boolean).join(' · ') || '—'}</div><span className={`stock-badge ${product.stock === 0 ? 'empty' : ''}`}>{product.stock === 0 ? '재고 없음' : '재고 있음'}</span></td><td className="number-cell"><strong>{formatNumber(product.stock)}</strong><span className="unit">{product.unit}</span></td><td className="action-cell"><button className={`button small ${selected?.id === product.id ? 'selected-button' : 'secondary'}`} aria-label={`${product.name} 재고 관리`} aria-pressed={selected?.id === product.id} disabled={stockBusy} onClick={() => setSelected(product)}>관리</button></td></tr>)}</tbody></table></div>}
-          {!loadError && <Pagination total={productTotal} page={page} onChange={next => { setPage(next); setSelected(null); }} busy={loading || stockBusy} />}
+          <div className="panel-heading"><h2>상품 목록 <span>{formatNumber(productTotal)}</span></h2>{query && <button className="text-button" onClick={() => { if (workspaceBusy || !canMutate) return; setSearchInput(''); setQuery(''); setPage(0); }}>검색 초기화</button>}</div>
+          <form className="search-form" role="search" onSubmit={event => { event.preventDefault(); if (workspaceBusy || !canMutate) return; setPage(0); setQuery(searchInput.trim()); }}><div className="search-input"><Icon name="search" size={19} /><input aria-label="상품명, 상품 코드 또는 세트 검색" placeholder="상품명, 상품 코드, 세트 검색" maxLength={200} value={searchInput} onChange={event => setSearchInput(event.target.value)} /><kbd>Enter</kbd></div><button className="button secondary" type="submit" disabled={loading || workspaceBusy || !canMutate}>검색</button></form>
+          {loadError ? <div className="section-error" role="alert"><p>{loadError}</p><button className="button secondary" onClick={refresh}>다시 시도</button></div> : loading ? <div className="loading-state" role="status">상품을 불러오는 중…</div> : products.length === 0 ? <EmptyState title={query ? '검색 결과가 없습니다' : '등록된 상품이 없습니다'} description={query ? '상품명, 상품 코드 또는 세트를 확인해 주세요.' : isStore ? '매장 상품 등록은 SWP 상점 관리에서 진행하세요.' : '상품을 등록하면 재고와 입출고 이력을 관리할 수 있습니다.'}>{!query && !isStore && <button className="button primary" disabled={workspaceBusy} onClick={() => setShowRegistration(true)}><Icon name="plus" size={17} />첫 상품 등록</button>}</EmptyState> : <div className="table-scroll"><table className="product-table"><thead><tr><th scope="col">상품</th><th scope="col">구분</th><th scope="col" className="number-cell">재고</th><th scope="col" className="action-cell">관리</th></tr></thead><tbody>{products.map(product => <tr key={product.id} className={selected?.id === product.id ? 'selected-row' : ''}><td><button className="product-name" disabled={workspaceBusy} onClick={() => setSelected(product)}>{product.name}</button><span className="product-code">{product.sku}{product.setName ? ` · ${product.setName}` : ''}</span></td><td><div className="product-meta">{[product.language, product.condition].filter(Boolean).join(' · ') || '—'}</div><span className={`stock-badge ${product.stock === 0 ? 'empty' : ''}`}>{product.stock === 0 ? '재고 없음' : '재고 있음'}</span></td><td className="number-cell"><strong>{formatNumber(product.stock)}</strong><span className="unit">{product.unit}</span></td><td className="action-cell"><button className={`button small ${selected?.id === product.id ? 'selected-button' : 'secondary'}`} aria-label={`${product.name} 재고 관리`} aria-pressed={selected?.id === product.id} disabled={workspaceBusy} onClick={() => setSelected(product)}>관리</button></td></tr>)}</tbody></table></div>}
+          {!loadError && <Pagination total={productTotal} page={page} onChange={next => { setPage(next); setSelected(null); }} busy={loading || workspaceBusy || !canMutate} />}
         </section>
 
-        {selected ? <StockPanel key={selected.id} product={selected} onBusyChange={setStockBusy} onClose={() => setSelected(null)} onHistory={() => openHistory(selected)} onChanged={result => { setSelected(result.product); refresh(); setNotice({ kind: 'success', text: `재고를 ${formatNumber(result.product.stock)}${result.product.unit}(으)로 저장했습니다.` }); }} onConflict={() => { refresh(); }} /> : <aside className="panel selection-placeholder"><div className="selection-illustration"><Icon name="box" size={34} /></div><h2>상품을 선택해 주세요</h2><p>목록에서 상품을 선택하면<br />입고·출고·실사 조정을 할 수 있습니다.</p><div className="selection-steps"><span><b>1</b>상품 검색</span><span><b>2</b>재고 변경 및 사유 입력</span><span><b>3</b>이력 자동 저장</span></div></aside>}
-      </div> : <section className="panel history-panel" aria-label="재고 변경 이력"><div className="panel-heading"><h2>{historyProduct ? `${historyProduct.name} 이력` : '전체 이력'} <span>{formatNumber(historyTotal)}</span></h2>{historyProduct && <button className="text-button" onClick={() => { setHistoryProduct(null); setHistoryPage(0); }}>전체 이력 보기</button>}</div><div className="history-description">입고·출고·실사 조정은 변경 전후 수량과 사유가 함께 기록됩니다.</div>{historyError ? <div className="section-error" role="alert"><p>{historyError}</p><button className="button secondary" onClick={refresh}>다시 시도</button></div> : historyLoading ? <div className="loading-state" role="status">이력을 불러오는 중…</div> : history.length === 0 ? <EmptyState icon="history" title="재고 변경 이력이 없습니다" description="상품을 등록하거나 재고를 변경하면 이곳에 기록됩니다." /> : <div className="table-scroll"><table className="history-table"><thead><tr><th scope="col">일시</th><th scope="col">상품</th><th scope="col">유형</th><th scope="col" className="number-cell">증감</th><th scope="col" className="number-cell">변경 전 → 후</th><th scope="col">사유</th></tr></thead><tbody>{history.map(item => <tr key={item.id}><td className="date-cell">{formatDate(item.createdAt)}</td><td><strong className="history-product-name">{item.name}</strong><span className="product-code">{item.sku}</span></td><td><span className={`movement-type type-${item.type}`}>{typeLabels[item.type] || item.type}</span></td><td className={`number-cell delta ${item.delta > 0 ? 'positive' : item.delta < 0 ? 'negative' : ''}`}>{item.delta > 0 ? '+' : ''}{formatNumber(item.delta)}</td><td className="number-cell quantity-change"><span>{formatNumber(item.beforeStock)}</span><span aria-hidden="true"> → </span><strong>{formatNumber(item.afterStock)}</strong></td><td className="reason-cell">{item.reason}</td></tr>)}</tbody></table></div>}{!historyError && <Pagination total={historyTotal} page={historyPage} onChange={setHistoryPage} busy={historyLoading} />}</section>}
+        {selected ? <StockPanel key={`${connection?.mode}-${selected.id}`} disabled={!canMutate || connectionBusy} product={selected} onBusyChange={setStockBusy} onClose={() => setSelected(null)} onHistory={() => openHistory(selected)} onChanged={result => { setSelected(result.product); refresh(); setNotice({ kind: 'success', text: `재고를 ${formatNumber(result.product.stock)}${result.product.unit}(으)로 저장했습니다.` }); }} onConflict={() => { refresh(); }} /> : <aside className="panel selection-placeholder"><div className="selection-illustration"><Icon name="box" size={34} /></div><h2>상품을 선택해 주세요</h2><p>목록에서 상품을 선택하면<br />입고·출고·실사 조정을 할 수 있습니다.</p><div className="selection-steps"><span><b>1</b>상품 검색</span><span><b>2</b>재고 변경 및 사유 입력</span><span><b>3</b>이력 자동 저장</span></div></aside>}
+      </div> : view === 'history' ? <section className="panel history-panel" aria-label="재고 변경 이력"><div className="panel-heading"><h2>{historyProduct ? `${historyProduct.name} 이력` : '전체 이력'} <span>{formatNumber(historyTotal)}</span></h2>{historyProduct && <button className="text-button" onClick={() => { setHistoryProduct(null); setHistoryPage(0); }}>전체 이력 보기</button>}</div><div className="history-description">입고·출고·실사 조정은 변경 전후 수량과 사유가 함께 기록됩니다.</div>{historyError ? <div className="section-error" role="alert"><p>{historyError}</p><button className="button secondary" onClick={refresh}>다시 시도</button></div> : historyLoading ? <div className="loading-state" role="status">이력을 불러오는 중…</div> : history.length === 0 ? <EmptyState icon="history" title="재고 변경 이력이 없습니다" description="상품을 등록하거나 재고를 변경하면 이곳에 기록됩니다." /> : <div className="table-scroll"><table className="history-table"><thead><tr><th scope="col">일시</th><th scope="col">상품</th><th scope="col">유형</th><th scope="col" className="number-cell">증감</th><th scope="col" className="number-cell">변경 전 → 후</th><th scope="col">사유</th></tr></thead><tbody>{history.map(item => <tr key={item.id}><td className="date-cell">{formatDate(item.createdAt)}</td><td><strong className="history-product-name">{item.name}</strong><span className="product-code">{item.sku}</span></td><td><span className={`movement-type type-${item.type}`}>{typeLabels[item.type] || item.type}</span></td><td className={`number-cell delta ${item.delta > 0 ? 'positive' : item.delta < 0 ? 'negative' : ''}`}>{item.delta > 0 ? '+' : ''}{formatNumber(item.delta)}</td><td className="number-cell quantity-change"><span>{formatNumber(item.beforeStock)}</span><span aria-hidden="true"> → </span><strong>{formatNumber(item.afterStock)}</strong></td><td className="reason-cell">{item.reason}</td></tr>)}</tbody></table></div>}{!historyError && <Pagination total={historyTotal} page={historyPage} onChange={setHistoryPage} busy={historyLoading || workspaceBusy} />}</section> : null}
 
-      <footer className="workspace-footer"><span><span className="local-dot" />로컬 저장{appInfo ? ` · ${appInfo.name}` : ''}</span>{appInfo?.databasePath && <span className="database-path" title={appInfo.databasePath}>DB 위치: {appInfo.databasePath}</span>}</footer>
+      <footer className="workspace-footer"><span><span className="local-dot" />{isStore ? '매장 서버 저장' : '로컬 저장'}{appInfo ? ` · ${appInfo.name}` : ''}</span>{(isStore ? connection?.serverUrl : appInfo?.databasePath) && <span className="database-path" title={isStore ? connection.serverUrl : appInfo.databasePath}>{isStore ? `서버: ${connection.serverUrl}` : `DB 위치: ${appInfo.databasePath}`}</span>}</footer>
     </main>
-    {showRegistration && <RegistrationModal onClose={() => setShowRegistration(false)} onRegistered={registered} />}
+    {showRegistration && !isStore && <RegistrationModal onClose={() => setShowRegistration(false)} onRegistered={registered} />}
   </div>;
 }
 
@@ -177,7 +215,7 @@ function Stat({ label, value, suffix, warning, hint }) {
   return <div className={`stat-card ${warning ? 'warning-stat' : ''}`} title={hint}><span className="stat-label">{label}</span><div><strong>{value === undefined ? '—' : formatNumber(value)}</strong><span>{suffix}</span></div></div>;
 }
 
-function StockPanel({ product, onClose, onHistory, onChanged, onConflict, onBusyChange }) {
+function StockPanel({ disabled, product, onClose, onHistory, onChanged, onConflict, onBusyChange }) {
   const [type, setType] = useState('IN');
   const [quantity, setQuantity] = useState('');
   const [reason, setReason] = useState('');
@@ -194,7 +232,7 @@ function StockPanel({ product, onClose, onHistory, onChanged, onConflict, onBusy
 
   async function submit(event) {
     event.preventDefault();
-    if (submitting.current) return;
+    if (submitting.current || disabled) return;
     if (!validQuantity || !validNextStock || noChange || !reason.trim()) { setError('수량과 변경 사유를 확인해 주세요.'); return; }
     submitting.current = true; setBusy(true); onBusyChange?.(true); setError('');
     const payload = { productId: product.id, type, quantity: quantityNumber, reason: reason.trim(), expectedVersion: product.version };
@@ -209,7 +247,7 @@ function StockPanel({ product, onClose, onHistory, onChanged, onConflict, onBusy
     } finally { submitting.current = false; setBusy(false); onBusyChange?.(false); }
   }
 
-  return <aside className="panel stock-panel" aria-label={`${product.name} 재고 관리`}><div className="panel-heading"><h2>재고 관리</h2><button className="plain-icon" aria-label="상품 선택 닫기" onClick={onClose} disabled={busy}><Icon name="close" size={18} /></button></div><div className="selected-product"><span className="product-code">{product.sku}</span><h3>{product.name}</h3><p>{[product.setName, product.language, product.condition].filter(Boolean).join(' · ') || '추가 구분 정보 없음'}</p><div className="current-stock"><span>현재 재고</span><div><strong>{formatNumber(product.stock)}</strong><span>{product.unit}</span></div></div></div><form className="stock-form" onSubmit={submit}><fieldset disabled={busy}><legend className="sr-only">재고 변경</legend><div className="segmented-control" role="group" aria-label="재고 변경 유형">{['IN', 'OUT', 'ADJUST'].map(value => <button key={value} type="button" aria-pressed={type === value} className={type === value ? 'active' : ''} onClick={() => { setType(value); setError(''); }}>{typeLabels[value]}</button>)}</div><label className="field"><span>{type === 'ADJUST' ? '실사 후 실제 수량' : `${typeLabels[type]} 수량`} <b>*</b></span><div className="input-with-unit"><input type="number" min={type === 'ADJUST' ? 0 : 1} max={MAX_STOCK} step="1" required placeholder="수량 입력" value={quantity} onChange={event => { setQuantity(event.target.value); }} /><span>{product.unit}</span></div></label>{type === 'ADJUST' && <p className="field-hint">증감량 대신 확인한 실제 재고 수량을 입력합니다.</p>}<label className="field"><span>변경 사유 <b>*</b></span><textarea rows={3} required maxLength={300} placeholder={type === 'IN' ? '입고 사유를 입력하세요' : type === 'OUT' ? '오프라인 판매 등 출고 사유를 입력하세요' : '실사 조정 사유를 입력하세요'} value={reason} onChange={event => { setReason(event.target.value); }} /></label><div className="stock-preview"><span>변경 후 재고</span><strong className={nextStock !== null && !validNextStock ? 'invalid-stock' : ''}>{nextStock === null ? '—' : `${formatNumber(nextStock)} ${product.unit}`}</strong></div>{nextStock !== null && !validNextStock && <p className="inline-error" role="alert">{nextStock < 0 ? '현재 재고보다 많이 출고할 수 없습니다.' : '최대 재고 수량을 초과합니다.'}</p>}{noChange && <p className="field-hint">현재 재고와 같은 수량입니다.</p>}{error && <div className="form-error" role="alert">{error}</div>}{needsReview && <div className="conflict-review"><p>최신 재고를 확인한 후 다시 저장해 주세요.</p><button type="button" className="button small secondary" onClick={() => { setNeedsReview(false); setError(''); }}>최신 수량 확인 완료</button></div>}<button className="button primary full-width" type="submit" disabled={busy || !validQuantity || !validNextStock || noChange || !reason.trim() || needsReview}>{busy ? '저장 중…' : '재고 변경 저장'}</button></fieldset></form><button className="history-link" onClick={onHistory} disabled={busy}><Icon name="history" size={17} />이 상품의 재고 이력<Icon name="arrow" size={15} /></button><div className="updated-at">최종 변경 {formatDate(product.updatedAt)}</div></aside>;
+  return <aside className="panel stock-panel" aria-label={`${product.name} 재고 관리`}><div className="panel-heading"><h2>재고 관리</h2><button className="plain-icon" aria-label="상품 선택 닫기" onClick={onClose} disabled={busy}><Icon name="close" size={18} /></button></div><div className="selected-product"><span className="product-code">{product.sku}</span><h3>{product.name}</h3><p>{[product.setName, product.language, product.condition].filter(Boolean).join(' · ') || '추가 구분 정보 없음'}</p><div className="current-stock"><span>현재 재고</span><div><strong>{formatNumber(product.stock)}</strong><span>{product.unit}</span></div></div></div><form className="stock-form" onSubmit={submit}><fieldset disabled={busy || disabled}><legend className="sr-only">재고 변경</legend><div className="segmented-control" role="group" aria-label="재고 변경 유형">{['IN', 'OUT', 'ADJUST'].map(value => <button key={value} type="button" aria-pressed={type === value} className={type === value ? 'active' : ''} onClick={() => { setType(value); setError(''); }}>{typeLabels[value]}</button>)}</div><label className="field"><span>{type === 'ADJUST' ? '실사 후 실제 수량' : `${typeLabels[type]} 수량`} <b>*</b></span><div className="input-with-unit"><input type="number" min={type === 'ADJUST' ? 0 : 1} max={MAX_STOCK} step="1" required placeholder="수량 입력" value={quantity} onChange={event => { setQuantity(event.target.value); }} /><span>{product.unit}</span></div></label>{type === 'ADJUST' && <p className="field-hint">증감량 대신 확인한 실제 재고 수량을 입력합니다.</p>}<label className="field"><span>변경 사유 <b>*</b></span><textarea rows={3} required maxLength={300} placeholder={type === 'IN' ? '입고 사유를 입력하세요' : type === 'OUT' ? '오프라인 판매 등 출고 사유를 입력하세요' : '실사 조정 사유를 입력하세요'} value={reason} onChange={event => { setReason(event.target.value); }} /></label><div className="stock-preview"><span>변경 후 재고</span><strong className={nextStock !== null && !validNextStock ? 'invalid-stock' : ''}>{nextStock === null ? '—' : `${formatNumber(nextStock)} ${product.unit}`}</strong></div>{nextStock !== null && !validNextStock && <p className="inline-error" role="alert">{nextStock < 0 ? '현재 재고보다 많이 출고할 수 없습니다.' : '최대 재고 수량을 초과합니다.'}</p>}{noChange && <p className="field-hint">현재 재고와 같은 수량입니다.</p>}{error && <div className="form-error" role="alert">{error}</div>}{needsReview && <div className="conflict-review"><p>최신 재고를 확인한 후 다시 저장해 주세요.</p><button type="button" className="button small secondary" onClick={() => { setNeedsReview(false); setError(''); }}>최신 수량 확인 완료</button></div>}<button className="button primary full-width" type="submit" disabled={busy || !validQuantity || !validNextStock || noChange || !reason.trim() || needsReview}>{busy ? '저장 중…' : '재고 변경 저장'}</button></fieldset></form><button className="history-link" onClick={onHistory} disabled={busy}><Icon name="history" size={17} />이 상품의 재고 이력<Icon name="arrow" size={15} /></button><div className="updated-at">최종 변경 {formatDate(product.updatedAt)}</div></aside>;
 }
 
 function RegistrationModal({ onClose, onRegistered }) {

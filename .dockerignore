@@ -1,0 +1,16 @@
+.git
+.codex
+.maven-cache
+**/node_modules
+**/target
+**/dist
+**/.env*
+**/data
+**/*.db
+**/*.db-*
+**/*.sqlite*
+**/*.mv.db
+**/*.trace.db
+**/*.log
+inventory-desktop
+docs

@@ -2,15 +2,27 @@
 const { ipcMain, dialog } = require('electron');
 const path = require('node:path');
 
-function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl }) {
+function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connection }) {
+  const local = action => connection ? connection.local(action) : action();
+  const inventory = (method, input) => connection?.mode === 'store'
+    ? connection.remote(method, input) : local(() => store[method](input));
   const methods = {
-    listProducts: input => store.listProducts(input),
-    createProduct: input => store.createProduct(input),
-    adjustStock: input => store.adjustStock(input),
-    getHistory: input => store.getHistory(input),
-    getOverview: () => store.getOverview(),
-    getAppInfo: () => appInfo,
-    backupDatabase: async () => {
+    listProducts: input => inventory('listProducts', input),
+    createProduct: input => inventory('createProduct', input),
+    adjustStock: input => inventory('adjustStock', input),
+    getHistory: input => inventory('getHistory', input),
+    getOverview: () => inventory('getOverview'),
+    getAppInfo: () => connection?.mode === 'store'
+      ? { ...appInfo, profile: 'store', databasePath: '', serverUrl: connection.getConnection().serverUrl, smartStoreConnected: connection.storeInfo.smartStoreConnected === true }
+      : appInfo,
+    getConnection: () => connection?.getConnection() || { mode: 'test', serverUrl: '', deviceName: '', connected: false, hasSavedConnection: false },
+    connectStore: input => connection.connectStore(input),
+    disconnectStore: () => connection.disconnectStore(),
+    useLocalTest: () => connection.useLocalTest(),
+    useStore: () => connection.useStore(),
+    ...Object.fromEntries(['getStoreInfo', 'getSmartStoreStatus', 'listSmartStoreProducts', 'getSmartStoreMappings', 'saveSmartStoreMapping', 'confirmSmartStoreBaseline', 'syncSmartStore']
+      .map(method => [method, input => connection.remote(method, input)])),
+    backupDatabase: () => local(async () => {
       const stamp = new Date().toISOString().replace(/[:.]/g, '-');
       const choice = await dialog.showSaveDialog(getWindow(), {
         title: '테스트 DB 백업',
@@ -21,7 +33,7 @@ function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl }) {
       // Backups never overwrite the source or an existing file.
       await store.backupTo(path.resolve(choice.filePath));
       return { canceled: false, path: choice.filePath };
-    },
+    }),
   };
   for (const [method, handler] of Object.entries(methods)) {
     ipcMain.handle(`inventory:${method}`, async (event, input) => {
@@ -32,7 +44,7 @@ function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl }) {
       try {
         return { ok: true, data: await handler(input) };
       } catch (error) {
-        const safeCodes = new Set(['VALIDATION', 'CONFLICT', 'DUPLICATE_SKU', 'NOT_FOUND', 'INSUFFICIENT_STOCK', 'NO_CHANGE', 'BACKUP_EXISTS']);
+        const safeCodes = new Set(['VALIDATION', 'CONFLICT', 'DUPLICATE_SKU', 'NOT_FOUND', 'INSUFFICIENT_STOCK', 'NO_CHANGE', 'BACKUP_EXISTS', 'BUSY', 'NOT_CONNECTED', 'UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNREACHABLE', 'SERVER_ERROR', 'NOT_CONFIGURED', 'UNSUPPORTED', 'SECURE_STORAGE_UNAVAILABLE']);
         return { ok: false, error: {
           code: safeCodes.has(error.code) ? error.code : 'DATABASE_ERROR',
           message: safeCodes.has(error.code) ? error.message : '데이터 처리에 실패했습니다. 다시 시도해 주세요.',

@@ -60,3 +60,40 @@ CREATE TABLE IF NOT EXISTS price_reference_checks (
 );
 CREATE INDEX IF NOT EXISTS idx_price_reference_actor ON price_reference_checks(actor_id,checked_at);
 ALTER TABLE price_reference_checks ADD COLUMN IF NOT EXISTS request_json TEXT;
+
+-- The existing cards.stock remains the single saleable-stock ledger.
+ALTER TABLE cards ADD COLUMN IF NOT EXISTS inventory_version BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE cards ADD COLUMN IF NOT EXISTS inventory_updated BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS inventory_type VARCHAR(20) NOT NULL DEFAULT 'ADJUST';
+ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS operation_id VARCHAR(36);
+CREATE TABLE IF NOT EXISTS inventory_pairings (
+  code_hash VARCHAR(64) PRIMARY KEY, actor_id VARCHAR(80) NOT NULL REFERENCES shop_users(id),
+  device_name VARCHAR(80) NOT NULL, expires BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS inventory_devices (
+  id VARCHAR(36) PRIMARY KEY, token_hash VARCHAR(64) NOT NULL UNIQUE,
+  actor_id VARCHAR(80) NOT NULL REFERENCES shop_users(id), name VARCHAR(80) NOT NULL,
+  created BIGINT NOT NULL, expires BIGINT NOT NULL, revoked BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE TABLE IF NOT EXISTS inventory_operations (
+  operation_id VARCHAR(36) PRIMARY KEY, device_id VARCHAR(36) NOT NULL REFERENCES inventory_devices(id),
+  payload_hash VARCHAR(64) NOT NULL, result_json TEXT NOT NULL, created BIGINT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS smartstore_mappings (
+  card_id VARCHAR(40) PRIMARY KEY REFERENCES cards(id), origin_product_no VARCHAR(30) NOT NULL,
+  channel_product_no VARCHAR(30) NOT NULL, option_id VARCHAR(30) NOT NULL DEFAULT '',
+  actor_id VARCHAR(80) NOT NULL REFERENCES shop_users(id), status VARCHAR(30) NOT NULL,
+  remote_stock INTEGER NOT NULL, baseline_at BIGINT NOT NULL, baseline_verified BOOLEAN NOT NULL DEFAULT FALSE,
+  order_cursor VARCHAR(50), order_sequence VARCHAR(100), orders_caught_up BOOLEAN NOT NULL DEFAULT FALSE,
+  last_synced BIGINT, message VARCHAR(300) NOT NULL,
+  UNIQUE(origin_product_no,option_id)
+);
+CREATE TABLE IF NOT EXISTS smartstore_order_effects (
+  product_order_id VARCHAR(50) PRIMARY KEY, card_id VARCHAR(40) NOT NULL REFERENCES cards(id),
+  quantity INTEGER NOT NULL, applied_quantity INTEGER NOT NULL,
+  order_status VARCHAR(40) NOT NULL, changed_at VARCHAR(50) NOT NULL
+);
+CREATE TABLE IF NOT EXISTS smartstore_sync_lock (
+  id INTEGER PRIMARY KEY, owner VARCHAR(36), expires BIGINT NOT NULL
+);
+INSERT INTO smartstore_sync_lock(id,expires) SELECT 1,0 WHERE NOT EXISTS (SELECT 1 FROM smartstore_sync_lock WHERE id=1);

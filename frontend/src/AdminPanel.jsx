@@ -1,11 +1,13 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PricingReference from './PricingReference.jsx';
+import InventoryDevices from './InventoryDevices.jsx';
 
 const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, image: '', active: true };
 export default function AdminPanel({ api, games, changed }) {
   const [tab, setTab] = useState('products'), [products, setProducts] = useState([]), [orders, setOrders] = useState([]), [events, setEvents] = useState([]), [movements, setMovements] = useState([]), [summary, setSummary] = useState(null);
   const [editor, setEditor] = useState(null), [stock, setStock] = useState(null), [event, setEvent] = useState(null), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
   const [editorSession, setEditorSession] = useState(0);
+  const [inventoryRefresh, setInventoryRefresh] = useState(0);
   const lock = useRef(false);
   function openEditor(value) { setEditorSession(current => current + 1); setEditor(value); }
   async function load() { const [p, o, e, m, s] = await Promise.all([api('/admin/products'), api('/admin/orders'), api('/admin/events'), api('/admin/movements'), api('/admin/summary')]); setProducts(p); setOrders(o); setEvents(e); setMovements(m); setSummary(s); }
@@ -19,7 +21,7 @@ export default function AdminPanel({ api, games, changed }) {
     else await api('/admin/products', { method: 'POST', body: { product, stock: Number(initialStock) } });
     setEditor(null);
   }); }
-  return <div className="admin-panel"><h2>상점 관리</h2><div className="admin-tabs">{[['products', '상품'], ['orders', '주문'], ['events', '일정'], ['movements', '재고 이력'], ['database', 'DB 테이블']].map(([id, label]) => <button key={id} aria-pressed={tab === id} onClick={() => { setTab(id); setEditor(null); setStock(null); setEvent(null); }}>{label}</button>)}<button disabled={busy} onClick={() => run(async () => {})}>새로고침</button></div>
+  return <div className="admin-panel"><h2>상점 관리</h2><div className="admin-tabs">{[['products', '상품'], ['orders', '주문'], ['events', '일정'], ['movements', '재고 이력'], ['database', 'DB 테이블'], ['inventory', '재고관리 앱']].map(([id, label]) => <button key={id} aria-pressed={tab === id} onClick={() => { setTab(id); setEditor(null); setStock(null); setEvent(null); }}>{label}</button>)}<button disabled={busy} onClick={() => tab === 'inventory' ? setInventoryRefresh(value => value + 1) : run(async () => {})}>새로고침</button></div>
     <p role="status" className="admin-message">{message}</p>
     {tab === 'products' && <>
       <button className="solid" disabled={busy} onClick={() => openEditor({ ...blank, game: games[0] || '' })}>상품 등록</button>
@@ -39,5 +41,6 @@ export default function AdminPanel({ api, games, changed }) {
       {events.map(e => <article className="order-item" key={e.ID}><strong>{e.TITLE} · {e.IS_SAMPLE ? '보관된 예시' : e.ACTIVE ? '공개' : '비공개'}</strong><p>{e.STARTS_AT}</p><button onClick={() => setEvent({ id: e.ID, game: e.GAME, title: e.TITLE, startsAt: String(e.STARTS_AT).replace(' ', 'T').slice(0, 16), description: e.DESCRIPTION, active: e.ACTIVE })}>수정</button></article>)}</>}
     {tab === 'movements' && <div className="admin-table-scroll"><table><thead><tr><th>상품</th><th>증감</th><th>잔고</th><th>사유</th><th>일시</th></tr></thead><tbody>{movements.map((m, i) => <tr key={i}><td>{m.CARD_ID}</td><td>{m.DELTA}</td><td>{m.BALANCE}</td><td>{m.REASON}<br />{m.ORDER_ID}</td><td>{new Date(m.CREATED * 1000).toLocaleString('ko-KR')}</td></tr>)}</tbody></table>{!movements.length && <p>입출고 이력이 없습니다.</p>}</div>}
     {tab === 'database' && summary && <><p>운영 상품 {summary.products}개 · 보관된 예시 {summary.sampleProducts}개</p><table><thead><tr><th>DB 테이블</th><th>저장 건수</th></tr></thead><tbody>{Object.entries(summary.tables).map(([name, n]) => <tr key={name}><td>{name}</td><td>{n}</td></tr>)}</tbody></table></>}
+    {tab === 'inventory' && <InventoryDevices api={api} refreshKey={inventoryRefresh} />}
   </div>;
 }

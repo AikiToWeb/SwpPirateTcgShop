@@ -78,14 +78,24 @@ public class ShopService {
         jdbc.update("DELETE FROM carts WHERE user_id=?",user);
         return orderMap(jdbc.queryForMap("SELECT * FROM shop_orders WHERE id=?",id));
     });}
-    void movement(String card,String actor,int delta,int balance,String reason,String order){jdbc.update("INSERT INTO stock_movements(card_id,actor_id,delta,balance,reason,order_id,created) VALUES(?,?,?,?,?,?,?)",card,actor,delta,balance,reason,order,now());}
+    void movement(String card,String actor,int delta,int balance,String reason,String order){
+        if(balance<0||balance>InventoryService.MAX_STOCK)throw error(409,"재고는 0~99,999,999 사이여야 합니다.");
+        String type=order!=null?(delta<0?"ORDER":"CANCEL"):reason.equals("상품 등록")?"INITIAL":delta>0?"IN":delta<0?"OUT":"ADJUST";
+        jdbc.update("INSERT INTO stock_movements(card_id,actor_id,delta,balance,reason,order_id,created,inventory_type) VALUES(?,?,?,?,?,?,?,?)",card,actor,delta,balance,reason,order,now(),type);
+        jdbc.update("UPDATE cards SET inventory_version=inventory_version+1,inventory_updated=? WHERE id=?",now(),card);
+        jdbc.update("UPDATE smartstore_mappings SET status='PENDING',message='공통 재고가 변경되었습니다. 주문 확인 후 동기화가 필요합니다.' WHERE card_id=? AND status NOT IN ('UNKNOWN','CONFLICT','BLOCKED')",card);
+    }
     public Map<String,Object> cancel(String user,String id){return tx.execute(status->{
         lockUser(user);
         var rows=jdbc.queryForList("SELECT * FROM shop_orders WHERE id=? AND user_id=? FOR UPDATE",id,user);
         if(rows.isEmpty())throw error(404,"주문이 없습니다.");
         var row=rows.getFirst();if(row.get("STATUS").equals("취소"))return orderMap(row);
         if(!row.get("STATUS").equals("접수"))throw error(409,"취소할 수 없는 주문입니다.");
-        for(var i:jdbc.queryForList("SELECT card_id,quantity FROM order_items WHERE order_id=? ORDER BY card_id",id)){jdbc.update("UPDATE cards SET stock=stock+? WHERE id=?",i.get("QUANTITY"),i.get("CARD_ID"));movement(i.get("CARD_ID").toString(),user,((Number)i.get("QUANTITY")).intValue(),jdbc.queryForObject("SELECT stock FROM cards WHERE id=?",Integer.class,i.get("CARD_ID")),"주문 취소",id);}
+        for(var i:jdbc.queryForList("SELECT card_id,quantity FROM order_items WHERE order_id=? ORDER BY card_id",id)){
+            long current=jdbc.queryForObject("SELECT stock FROM cards WHERE id=? FOR UPDATE",Long.class,i.get("CARD_ID"));int quantity=((Number)i.get("QUANTITY")).intValue();long next=current+quantity;
+            if(next>InventoryService.MAX_STOCK)throw error(409,"취소 재고 복구 시 상한을 초과합니다. 관리자에게 재고 확인을 요청하세요.");
+            jdbc.update("UPDATE cards SET stock=? WHERE id=?",next,i.get("CARD_ID"));movement(i.get("CARD_ID").toString(),user,quantity,(int)next,"주문 취소",id);
+        }
         jdbc.update("UPDATE shop_orders SET status='취소' WHERE id=?",id);
         return orderMap(jdbc.queryForMap("SELECT * FROM shop_orders WHERE id=?",id));
     });}
