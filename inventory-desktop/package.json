@@ -1,0 +1,47 @@
+{
+  "name": "swp-inventory-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Single-PC local test inventory manager",
+  "author": "SWP",
+  "license": "UNLICENSED",
+  "main": "desktop/main.cjs",
+  "engines": { "node": ">=24.0.0" },
+  "scripts": {
+    "build": "node scripts/build.cjs",
+    "start": "npm run build && electron .",
+    "test": "node --test test/*.test.cjs",
+    "test:desktop": "npm run build && electron scripts/desktop-smoke.cjs",
+    "package": "npm run build && electron-builder --win nsis portable --x64",
+    "package:dir": "npm run build && electron-builder --win --dir --x64"
+  },
+  "dependencies": {
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "electron": "45.2.1",
+    "electron-builder": "26.18.0",
+    "esbuild": "0.28.2"
+  },
+  "build": {
+    "appId": "kr.swp.inventory.test",
+    "productName": "SWP Inventory Test",
+    "directories": { "output": "release" },
+    "files": ["desktop/**/*", "lib/**/*", "dist/**/*", "index.html", "package.json"],
+    "asar": true,
+    "win": {
+      "target": ["nsis", "portable"],
+      "signAndEditExecutable": false
+    },
+    "nsis": {
+      "artifactName": "SWP-Inventory-Test-${version}-${arch}-nsis.${ext}",
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "deleteAppDataOnUninstall": false
+    },
+    "portable": { "artifactName": "SWP-Inventory-Test-${version}-${arch}-portable.${ext}" }
+  }
+}
