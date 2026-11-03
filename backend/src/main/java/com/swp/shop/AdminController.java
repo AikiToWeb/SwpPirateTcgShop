@@ -14,7 +14,7 @@ public class AdminController {
     private final ShopService s;
     public AdminController(ShopService s){this.s=s;}
     String admin(HttpServletRequest req,boolean write){String id=write?s.mutation(req):s.session(req,true).get("user_id").toString();if(!"ADMIN".equals(s.jdbc.queryForObject("SELECT role FROM shop_users WHERE id=?",String.class,id)))throw ShopService.error(403,"관리자 권한이 필요합니다.");return id;}
-    public record Product(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,40}") String id,@NotBlank @Size(max=200) String name,@Size(max=200) String en,@NotBlank @Size(max=200) String set,@NotBlank @Size(max=80) String game,@NotBlank @Pattern(regexp="NM|EX|VG|G") String condition,@NotBlank @Size(max=30) String language,@Min(0) @Max(1000000000) long price,@Size(max=200) String image,@Min(0) @Max(1000000) Integer confirmedStock,boolean active){}
+    public record Product(@NotBlank @Pattern(regexp="[A-Za-z0-9_-]{1,40}") String id,@NotBlank @Size(max=200) String name,@Size(max=200) String en,@NotBlank @Size(max=200) String set,@NotBlank @Size(max=80) String game,@NotBlank @Pattern(regexp="NM|EX|VG|G") String condition,@NotBlank @Size(max=30) String language,@Min(0) @Max(1000000000) long price,@Size(max=1000) String image,@Min(0) @Max(1000000) Integer confirmedStock,boolean active){}
     public record Create(@Valid @NotNull Product product,@Min(0) @Max(1000000) int stock){}
     public record Stock(@Min(-1000000) @Max(1000000) int delta,@Min(0) int expectedStock,@NotBlank @Size(max=300) String reason){}
     public record Event(@NotBlank @Size(max=80) String game,@NotBlank @Size(max=200) String title,@NotNull LocalDateTime startsAt,@Size(max=1000) String description,boolean active){}

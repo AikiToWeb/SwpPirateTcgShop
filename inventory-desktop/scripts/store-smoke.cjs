@@ -23,15 +23,137 @@ let javaProcess, win, webWindow, store, unregister;
 let serverUrl;
 const cookie = randomBytes(32).toString('hex');
 const csrf = randomBytes(24).toString('hex');
-async function api(route, method = 'GET', body, authenticated = true) {
+async function api(route, method = 'GET', body, authenticated = true, timeout = 10000) {
   const response = await fetch(`${serverUrl}/shop-api${route}`, { method,
     headers: { ...(authenticated ? { Cookie: `swp_session=${cookie}`, Origin: serverUrl, 'X-CSRF-Token': csrf } : {}),
       ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
-    ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(10000), redirect: 'error',
+    ...(body !== undefined ? { body: JSON.stringify(body) } : {}), signal: AbortSignal.timeout(timeout), redirect: 'error',
   });
   const data = await response.json();
   assert.ok(response.ok, `${method} ${route} failed with HTTP ${response.status}`);
   return data;
+}
+async function verifyCardImages() {
+  const searches = [
+    { id: 'IMAGE-OP08-001', label: 'onepiece', game: '원피스 카드게임', language: '한국어', query: 'OP08-001', host: 'onepiece-cardgame.kr' },
+    { id: 'IMAGE-FAB-CNC', label: 'fab', game: '플래시 앤 블러드', language: '영어', query: 'Command and Conquer', host: 'legendstory-production-s3-public.s3.amazonaws.com' },
+    { id: 'IMAGE-RIFT-GAREN', label: 'riftbound', game: '리프트바운드', language: '한국어', query: '가렌', host: 'cmsassets.rgpub.io' },
+  ];
+  const records = [];
+  const evidence = [];
+  for (const { host, id, label, ...search } of searches) {
+    const result = await api('/admin/images/search', 'POST', { ...search, page: 0 }, true, 60000);
+    assert.equal(result.status, 'OK', `${search.game} live lookup must succeed (${result.status})`);
+    assert.ok(result.items.length > 0, `${search.game} must return actual official candidates`);
+    for (const candidate of result.items) {
+      assert.equal(new URL(candidate.imageUrl).hostname, host);
+      assert.equal(candidate.language, search.language);
+      assert.ok(candidate.cardNumber && candidate.sourceUrl);
+    }
+    if (search.game === '원피스 카드게임') {
+      assert.ok(new Set(result.items.map(item => item.imageUrl)).size >= 2, 'Alternative OnePiece printings must remain distinct');
+    }
+    const chosen = search.game === '원피스 카드게임' ? result.items.find(item => item.cardNumber === 'OP08-001') : result.items[0];
+    assert.ok(chosen, 'The explicitly requested printing must be present.');
+    records.push({ id, label, search, result, chosen });
+    console.log(`PASS official image source: ${search.game}, ${result.items.length} candidates, ${search.language}.`);
+  }
+  const unsupported = await api('/admin/images/search', 'POST', { game: '플래시 앤 블러드', language: '한국어', query: 'Command and Conquer', page: 0 });
+  assert.equal(unsupported.status, 'UNSUPPORTED_LANGUAGE');
+  for (const { id, label, search, result, chosen } of records) {
+  await api('/admin/products', 'POST', { product: { id, name: chosen.name, en: '', set: chosen.setName || '격리 검증', game: search.game, condition: 'NM', language: search.language, price: 1000, image: '', active: true }, stock: 1 });
+  // Reload the real site and edit the isolated product through the actual React admin form.
+  await webWindow.reload();
+  await webWindow.webContents.executeJavaScript(`(async () => {
+    const wait = async predicate => { const until=Date.now()+8000; while (!predicate()) { if(Date.now()>until) throw new Error('Image form did not mount'); await new Promise(resolve=>setTimeout(resolve,50)); } };
+    await wait(()=>document.querySelector('.admin-open'));
+    document.querySelector('.admin-open').click();
+    await wait(()=>[...document.querySelectorAll('tr')].some(row=>row.textContent.includes(${JSON.stringify(id)})));
+    const row=[...document.querySelectorAll('tr')].find(row=>row.textContent.includes(${JSON.stringify(id)}));
+    [...row.querySelectorAll('button')].find(button=>button.textContent==='수정').click();
+    await wait(()=>document.querySelector('[aria-label="공식 카드 이미지 검색어"]'));
+    const input=document.querySelector('[aria-label="공식 카드 이미지 검색어"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(chosen.name)});
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    await new Promise(resolve=>setTimeout(resolve,50));
+    [...document.querySelectorAll('button')].find(button=>button.textContent==='공식 이미지 검색').click();
+  })()`);
+  // First search the real official name; refine OnePiece by the user-specified collector code.
+  await webWindow.webContents.executeJavaScript(`(async () => {
+    const until=Date.now()+60000;
+    while(!document.querySelector('.card-image-results')) {
+      if(Date.now()>until) throw new Error('Real card-name lookup did not return');
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    if(!document.querySelector('.card-image-candidate')) throw new Error('Real card-name lookup returned no candidates');
+  })()`);
+  if (label === 'onepiece') await webWindow.webContents.executeJavaScript(`(async () => {
+    const input=document.querySelector('[aria-label="공식 카드 이미지 검색어"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'OP08-001');
+    input.dispatchEvent(new Event('input',{bubbles:true}));
+    await new Promise(resolve=>setTimeout(resolve,50));
+    [...document.querySelectorAll('button')].find(button=>button.textContent==='공식 이미지 검색').click();
+  })()`);
+  const picked = await webWindow.webContents.executeJavaScript(`(async () => {
+    const until=Date.now()+60000;
+    let button, scrolled=false;
+    const target=()=>[...document.querySelectorAll('.card-image-candidate')].find(article=>article.querySelector('img')?.src===${JSON.stringify(new URL(chosen.imageUrl).href)});
+    while (!(button=target()?.querySelector('button')) || button.disabled) {
+      if(Date.now()>until) throw new Error('Official candidate images did not load for selection');
+      const first=target();
+      if(first&&!scrolled) { first.scrollIntoView({block:'center'}); scrolled=true; }
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    const src=button.closest('.card-image-candidate').querySelector('img').src;
+    button.click();
+    await new Promise(resolve=>setTimeout(resolve,80));
+    const form=document.querySelector('.admin-form');
+    const field=[...form.querySelectorAll('label')].find(label=>label.textContent.startsWith('이미지 HTTPS'));
+    if(field.querySelector('input').value!==src) throw new Error('Selected image was not applied to the field');
+    if(!form.querySelector('[alt="저장 전 상품 이미지 미리보기"]')) throw new Error('Selected image preview missing');
+    form.requestSubmit();
+    return src;
+  })()`);
+  assert.ok(result.items.some(item => new URL(item.imageUrl).href === picked));
+  const until = Date.now() + 10000;
+  let saved;
+  while (Date.now() < until) {
+    saved = (await api('/admin/products')).find(product => product.id === id);
+    if (saved.image === picked) break;
+    await new Promise(resolve => setTimeout(resolve, 80));
+  }
+  assert.equal(saved.image, picked);
+  assert.equal(saved.name, chosen.name);
+  assert.equal(saved.price, 1000); assert.equal(saved.stock, 1);
+  assert.equal(saved.language, search.language); assert.equal(saved.condition, 'NM');
+  const displayed = await webWindow.webContents.executeJavaScript(`(async () => {
+    document.querySelector('dialog[open] .close')?.click();
+    await new Promise(resolve=>setTimeout(resolve,100));
+    const game=[...document.querySelectorAll('.game-tabs button')].find(button=>button.textContent===${JSON.stringify(search.game)});
+    if(!game)throw new Error('Storefront game tab missing');
+    game.click();
+    const until=Date.now()+30000;
+    let article;
+    while (!(article=[...document.querySelectorAll('article.product')].find(row=>row.textContent.includes(${JSON.stringify(id)})))) {
+      if(Date.now()>until)throw new Error('Saved product was not displayed');
+      await new Promise(resolve=>setTimeout(resolve,80));
+    }
+    article.scrollIntoView({block:'center'});
+    const img=article.querySelector('.product-photo img');
+    while(!img.complete||img.naturalWidth===0) {
+      if(Date.now()>until)throw new Error('Saved storefront image did not load');
+      await new Promise(resolve=>setTimeout(resolve,100));
+    }
+    return {src:img.src,width:img.naturalWidth,height:img.naturalHeight};
+  })()`);
+  assert.equal(displayed.src, picked);
+  await webWindow.webContents.executeJavaScript(`new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve)))`);
+  const screenshot = path.join(directory, `image-${label}-storefront.png`);
+  fs.writeFileSync(screenshot, (await webWindow.webContents.capturePage()).toPNG());
+  evidence.push({ game: search.game, name: chosen.name, cardNumber: chosen.cardNumber, language: chosen.language, selectedImage: picked, sourceUrl: chosen.sourceUrl, persisted: true, storefrontLoaded: true, dimensions: [displayed.width, displayed.height], screenshot });
+  console.log(`PASS real name search, explicit selection, save and storefront image: ${search.game} / ${chosen.name} / ${chosen.cardNumber}.`);
+  }
+  fs.writeFileSync(path.join(directory, 'card-image-evidence.json'), JSON.stringify(evidence, null, 2));
 }
 async function invoke(method, args) {
   const result = await win.webContents.executeJavaScript(`window.inventory[${JSON.stringify(method)}](${JSON.stringify(args) ?? 'undefined'})`);
@@ -93,7 +215,7 @@ app.whenReady().then(async () => {
     assert.equal(legacy?.sample, true);
   }
   // Exercise the actual administrator UI against the isolated server, without a production login.
-  webWindow = new BrowserWindow({ show: false, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  webWindow = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, offscreen: true, backgroundThrottling: false } });
   await webWindow.webContents.session.cookies.set({ url: serverUrl, name: 'swp_session', value: cookie, httpOnly: true, sameSite: 'lax' });
   await webWindow.loadURL(serverUrl);
   await webWindow.webContents.executeJavaScript(`(async () => {
@@ -142,6 +264,7 @@ app.whenReady().then(async () => {
   assert.equal(replay.status, 401);
   const games = await api('/games', 'GET', undefined, false);
   await api('/admin/products', 'POST', { product: { id: 'integration-card', name: '격리 통합 검증 상품', en: '', set: '검증 세트', game: games[0], condition: 'NM', language: '한국어', price: 1000, image: '', active: true }, stock: 10 });
+  if (process.env.INVENTORY_TEST_CARD_IMAGES === '1') await verifyCardImages();
   let product = (await invoke('listProducts', { query: 'integration-card' })).items[0];
   assert.equal(product.stock, 10);
   const change = { productId: product.id, type: 'IN', quantity: 5, reason: '격리 통합 검증 입고', expectedVersion: product.version, operationId: randomUUID() };
@@ -149,7 +272,7 @@ app.whenReady().then(async () => {
   assert.equal(changed.product.stock, 15);
   assert.deepEqual(await invoke('adjustStock', change), changed);
   let cards = await api('/cards', 'GET', undefined, false);
-  assert.equal(cards[0].stock, 15, 'Desktop adjustment must be visible in the storefront API.');
+  assert.equal(cards.find(card => card.id === product.id).stock, 15, 'Desktop adjustment must be visible in the storefront API.');
   const order = await api('/orders', 'POST', { items: [{ id: product.id, quantity: 2 }], request_key: randomUUID() });
   product = (await invoke('listProducts', { query: 'integration-card' })).items[0];
   assert.equal(product.stock, 13, 'Web order must use the same inventory.');
@@ -164,7 +287,7 @@ app.whenReady().then(async () => {
   await invoke('useLocalTest');
   assert.equal((await invoke('listProducts', {})).total, 0, 'Store products must never be copied to the local test DB.');
   await invoke('useStore');
-  assert.equal((await invoke('listProducts', {})).total, 1);
+  assert.equal((await invoke('listProducts', {})).total, process.env.INVENTORY_TEST_CARD_IMAGES === '1' ? 4 : 1);
   await invoke('disconnectStore');
   const revoked = await fetch(`${serverUrl}/shop-api/inventory/overview`, { headers: { Authorization: `Bearer ${token}` } });
   assert.equal(revoked.status, 401);

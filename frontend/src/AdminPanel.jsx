@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from 'react';
 import PricingReference from './PricingReference.jsx';
 import InventoryDevices from './InventoryDevices.jsx';
+import CardImageSearch from './CardImageSearch.jsx';
 
 const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, image: '', active: true };
 export default function AdminPanel({ api, games, changed }) {
@@ -13,7 +14,7 @@ export default function AdminPanel({ api, games, changed }) {
   async function load() { const [p, o, e, m, s] = await Promise.all([api('/admin/products'), api('/admin/orders'), api('/admin/events'), api('/admin/movements'), api('/admin/summary')]); setProducts(p); setOrders(o); setEvents(e); setMovements(m); setSummary(s); }
   async function run(task) { if (lock.current) return; lock.current = true; setBusy(true); setMessage(''); try { await task(); await load(); await changed(); setMessage('저장 완료'); } catch (e) { setMessage(e.message); } finally { lock.current = false; setBusy(false); } }
   useEffect(() => { load().catch(e => setMessage(e.message)); }, []);
-  function field(label, key, type = 'text', required = true) { return <label>{label}<input type={type} required={required} min={type === 'number' ? 0 : undefined} value={editor[key] ?? ''} disabled={key === 'id' && editor.edit} maxLength={key === 'id' ? 40 : 200} onChange={e => setEditor({ ...editor, [key]: type === 'number' ? Number(e.target.value) : e.target.value })} /></label>; }
+  function field(label, key, type = 'text', required = true) { return <label>{label}<input type={type} required={required} min={type === 'number' ? 0 : undefined} value={editor[key] ?? ''} disabled={key === 'id' && editor.edit} maxLength={key === 'id' ? 40 : key === 'image' ? 1000 : 200} onChange={e => setEditor({ ...editor, [key]: type === 'number' ? Number(e.target.value) : e.target.value })} /></label>; }
   function saveProduct(e) { e.preventDefault(); run(async () => {
     const { edit, stock: initialStock, sample, ...product } = editor;
     if (sample) product.confirmedStock = Number(initialStock);
@@ -29,6 +30,7 @@ export default function AdminPanel({ api, games, changed }) {
         {field('상품 코드', 'id')}{field('상품명', 'name')}{field('영문명', 'en', 'text', false)}{field('세트명', 'set')}
         <label>게임<select value={editor.game} onChange={e => setEditor({ ...editor, game: e.target.value })}>{games.map(g => <option key={g}>{g}</option>)}</select></label>
         <label>컨디션<select value={editor.condition} onChange={e => setEditor({ ...editor, condition: e.target.value })}>{['NM', 'EX', 'VG', 'G'].map(g => <option key={g}>{g}</option>)}</select></label>{field('언어', 'language')}{field('판매가 (원)', 'price', 'number')}{(!editor.edit || editor.sample) && field('실물 확인 재고', 'stock', 'number')}{field('이미지 HTTPS 주소 또는 파일명', 'image', 'text', false)}
+        <CardImageSearch key={editorSession} api={api} product={editor} disabled={busy} onApplyImage={(image, identity) => setEditor(current => current && identity && ['id', 'name', 'game', 'language'].every(key => (current[key] || '') === identity[key]) ? { ...current, image } : current)} />
         <label className="checkbox"><input type="checkbox" checked={editor.active} onChange={e => setEditor({ ...editor, active: e.target.checked })} />판매 공개</label>
         <div className="form-actions"><button type="submit" disabled={busy}>저장</button><button type="button" onClick={() => setEditor(null)}>닫기</button></div>
       </form><PricingReference key={editorSession} api={api} product={editor} disabled={busy} onApply={price => setEditor(current => current ? { ...current, price } : current)} /></>}
