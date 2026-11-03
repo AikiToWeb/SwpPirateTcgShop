@@ -98,4 +98,20 @@ class PricingTest {
         var s=service(mock(PricingPageClient.class));for(int i=0;i<12;i++)s.quote("limited-admin",request(null,null,true,true));
         var error=assertThrows(org.springframework.web.server.ResponseStatusException.class,()->s.quote("limited-admin",request(null,null,true,true)));assertEquals(429,error.getStatusCode().value());
     }
+    Request multi(List<NaverReference> refs){var r=request(null,null,true,true);return new Request(r.name(),r.en(),r.set(),r.game(),r.language(),r.condition(),r.productType(),1,null,null,true,true,null,"https://smartstore.naver.com/legacy/products/1",1L,OBSERVED,true,refs);}
+    @Test void multipleManualReferencesRequireEveryRowValidAndSelectLowest() {
+        var pages=mock(PricingPageClient.class);var s=service(pages);
+        var a=new NaverReference("https://smartstore.naver.com/cardbean/products/13827937760",3000L,OBSERVED,true);
+        var b=new NaverReference("https://smartstore.naver.com/ckmr/products/13826678249",2000L,OBSERVED.plusSeconds(1),true);
+        var result=s.quote("multi",multi(List.of(a,b)));assertEquals("READY",result.status());assertEquals(2000L,result.recommendedPrice());assertEquals(4,result.quotes().size());assertEquals(b.url(),result.quotes().get(3).url());assertEquals(b.url(),result.selectedUrl());assertEquals(OBSERVED,result.checkedAt());
+        for(var bad:List.of(new NaverReference(b.url(),2000L,OBSERVED,false),new NaverReference(b.url(),0L,OBSERVED,true),new NaverReference(b.url(),2000L,Instant.now().plusSeconds(60),true),new NaverReference(b.url(),2000L,Instant.now().minusSeconds(90000),true),new NaverReference("https://secret:password@smartstore.naver.com/ckmr/products/1",2000L,OBSERVED,true))){
+            var rejected=s.quote("multi",multi(List.of(a,bad)));assertNotEquals("READY",rejected.status());assertNull(rejected.recommendedPrice());assertNull(rejected.selectedUrl());assertFalse(rejected.toString().contains("password"));
+        }
+        var tie=new NaverReference(b.url(),3000L,OBSERVED,true);assertEquals(a.url(),s.quote("multi",multi(List.of(a,tie))).selectedUrl());
+        var duplicate=new NaverReference("https://smartstore.naver.com:443/cardbean/products/13827937760",1000L,OBSERVED,true);
+        assertEquals("NEEDS_REVIEW",s.quote("multi",multi(List.of(a,duplicate))).status());
+        assertEquals(1L,s.quote("multi",multi(List.of())).recommendedPrice());verifyNoInteractions(pages);
+        var mapped=multi(List.of(a,b));var primaryUnknown=new Request(mapped.name(),mapped.en(),mapped.set(),mapped.game(),mapped.language(),mapped.condition(),mapped.productType(),1,null,null,false,true,null,null,null,null,false,mapped.naverReferences());
+        var held=s.quote("multi",primaryUnknown);assertEquals("NEEDS_MAPPING",held.status());assertEquals(2,held.quotes().size());assertNull(held.selectedUrl());
+    }
 }
