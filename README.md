@@ -4,6 +4,11 @@ Java 21 / Spring Boot 3.5 + React / Vite 기반 카드 상점입니다. PostgreS
 
 PostgreSQL 설정·데이터 보존 이전·DBeaver 접속은 [backend/POSTGRESQL.md](backend/POSTGRESQL.md)를 참고하세요.
 
+## 에이전트 운영
+
+이 프로젝트는 **PM·기획자·프론트 개발자·백엔드 개발자·QA** 다섯 역할로 운영합니다. 기본 채팅이 PM이며 사용자와 직접 소통하는 창구는 PM뿐입니다. 나머지 역할은 PM에게 보고합니다. 운영 지침은 [AGENTS.md](AGENTS.md), 역할 설정은 [.codex/agents](.codex/agents), 배정·검수 절차는 [팀 운영 안내](docs/agent-team.md)를 확인하세요. 다른 PC에서는 이 저장소 폴더를 작업 폴더로 열고 새 채팅에서 적용합니다.
+
+
 ## 실행
 
 Java 21+, Maven 3.9+, Node.js 22.12+가 필요합니다. 두 터미널에서 실행합니다.

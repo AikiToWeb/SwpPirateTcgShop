@@ -1,0 +1,4 @@
+[agents]
+enabled = true
+# Four specialists plus the primary PM. Host-managed limits still apply.
+max_concurrent_threads_per_session = 4
