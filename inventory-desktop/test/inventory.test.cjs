@@ -234,12 +234,12 @@ test('future database versions are refused without altering schema or data', t =
   const { directory } = setup(t);
   const filename = path.join(directory, 'future.sqlite');
   const db = new DatabaseSync(filename);
-  db.exec('PRAGMA user_version = 2; CREATE TABLE marker (value TEXT); INSERT INTO marker VALUES (\'preserved\');');
+  db.exec('PRAGMA user_version = 3; CREATE TABLE marker (value TEXT); INSERT INTO marker VALUES (\'preserved\');');
   db.close();
   assert.throws(() => new InventoryStore(filename), code('DB_VERSION'));
   const check = new DatabaseSync(filename);
   try {
-    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(check.prepare('PRAGMA user_version').get().user_version, 3);
     assert.equal(check.prepare('SELECT value FROM marker').get().value, 'preserved');
     assert.equal(check.prepare("SELECT count(*) AS total FROM sqlite_master WHERE name = 'products'").get().total, 0);
   } finally { check.close(); }

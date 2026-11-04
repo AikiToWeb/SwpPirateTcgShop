@@ -3,9 +3,10 @@
 const { DatabaseSync, backup } = require('node:sqlite');
 const { mkdirSync, existsSync } = require('node:fs');
 const path = require('node:path');
+const { isAllowedImageUrl } = require('./card-images.cjs');
 
 const MAX_STOCK = 99_999_999;
-const productColumns = `id, sku, name, set_name AS setName, language, condition, unit,
+const productColumns = `id, sku, name, set_name AS setName, language, condition, unit, game, image,
   stock, version, created_at AS createdAt, updated_at AS updatedAt`;
 const movementColumns = `m.id, m.product_id AS productId, p.sku, p.name, m.type, m.delta,
   m.before_stock AS beforeStock, m.after_stock AS afterStock, m.reason,
@@ -53,7 +54,7 @@ class InventoryStore {
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;');
       const current = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (current > 1) fail('DB_VERSION', '더 새로운 버전의 DB입니다. 프로그램을 업데이트해 주세요.');
+      if (current > 2) fail('DB_VERSION', '더 새로운 버전의 DB입니다. 프로그램을 업데이트해 주세요.');
       if (current === 0) {
         this.db.exec(`BEGIN IMMEDIATE;
           CREATE TABLE products (
@@ -89,6 +90,21 @@ class InventoryStore {
           ) STRICT;
           PRAGMA user_version = 1;
           COMMIT;`);
+      }
+      if (current < 2) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          this.db.exec("ALTER TABLE products ADD COLUMN game TEXT NOT NULL DEFAULT ''; ALTER TABLE products ADD COLUMN image TEXT NOT NULL DEFAULT '';");
+          // Old operation keys remain usable after upgrading. Their original snapshots gain empty optional fields.
+          for (const row of this.db.prepare('SELECT id, payload, result FROM operations').all()) {
+            const payload = JSON.parse(row.payload), result = JSON.parse(row.result);
+            if (payload.action === 'create') { payload.game = ''; payload.image = ''; }
+            const product = payload.action === 'create' ? result : result.product;
+            if (product) { product.game = ''; product.image = ''; }
+            this.db.prepare('UPDATE operations SET payload=?, result=? WHERE id=?').run(JSON.stringify(payload), JSON.stringify(result), row.id);
+          }
+          this.db.exec('PRAGMA user_version = 2; COMMIT;');
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       }
     } catch (error) {
       this.db.close();
@@ -127,15 +143,15 @@ class InventoryStore {
     const normalized = textValue(query, '검색어', 200);
     [limit, offset] = pageValues(limit, offset);
     const pattern = `%${normalized.replace(/[\\%_]/g, '\\$&')}%`;
-    const where = `WHERE sku LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' OR set_name LIKE ? ESCAPE '\\'`;
-    const params = [pattern, pattern, pattern];
+    const where = `WHERE sku LIKE ? ESCAPE '\\' OR name LIKE ? ESCAPE '\\' OR set_name LIKE ? ESCAPE '\\' OR game LIKE ? ESCAPE '\\'`;
+    const params = [pattern, pattern, pattern, pattern];
     const total = this.db.prepare(`SELECT COUNT(*) AS total FROM products ${where}`).get(...params).total;
     const items = this.db.prepare(`SELECT ${productColumns} FROM products ${where} ORDER BY name COLLATE NOCASE, sku COLLATE NOCASE, id LIMIT ? OFFSET ?`)
       .all(...params, limit, offset).map(row => ({ ...row }));
     return { items, total };
   }
 
-  createProduct({ sku, name, setName = '', language = '', condition = '', unit = '개', initialStock = 0, operationId } = {}) {
+  createProduct({ sku, name, setName = '', language = '', condition = '', unit = '개', initialStock = 0, game = '', image = '', operationId } = {}) {
     const input = {
       sku: textValue(sku, '상품 코드', 64, true),
       name: textValue(name, '상품명', 200, true),
@@ -144,7 +160,11 @@ class InventoryStore {
       condition: textValue(condition, '컨디션', 40),
       unit: textValue(unit, '판매 단위', 20, true),
       initialStock: integer(initialStock, '초기 재고'),
+      game: textValue(game, '게임', 80),
+      image: textValue(image, '이미지 주소', 1000),
     };
+    if (input.game && !['원피스 카드게임', '플래시 앤 블러드', '플레시 앤 블러드', '리프트바운드'].includes(input.game)) fail('VALIDATION', '지원하는 게임 분류를 선택해 주세요.');
+    if (input.image && !isAllowedImageUrl(input.image)) fail('VALIDATION', '지원하는 공식 카드 이미지 주소만 사용할 수 있습니다.');
     operationId = operationIdValue(operationId);
     return this.transact(operationId, { action: 'create', ...input }, () => {
       if (this.db.prepare('SELECT id FROM products WHERE sku = ? COLLATE NOCASE').get(input.sku)) {
@@ -152,9 +172,9 @@ class InventoryStore {
       }
       const now = new Date().toISOString();
       const result = this.db.prepare(`INSERT INTO products
-        (sku, name, set_name, language, condition, unit, stock, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.sku, input.name, input.setName,
-        input.language, input.condition, input.unit, input.initialStock, now, now);
+        (sku, name, set_name, language, condition, unit, stock, created_at, updated_at, game, image)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.sku, input.name, input.setName,
+        input.language, input.condition, input.unit, input.initialStock, now, now, input.game, input.image);
       const id = Number(result.lastInsertRowid);
       this.db.prepare(`INSERT INTO movements
         (product_id, type, delta, before_stock, after_stock, reason, created_at, operation_id)

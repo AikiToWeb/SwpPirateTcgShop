@@ -23,7 +23,7 @@ public class InventoryService {
         long created=((Number)row.get("CREATED")).longValue(),updated=((Number)row.get("INVENTORY_UPDATED")).longValue();
         return Map.ofEntries(Map.entry("id",row.get("ID")),Map.entry("sku",row.get("ID")),Map.entry("name",row.get("NAME")),
             Map.entry("setName",row.get("SET_NAME")),Map.entry("language",row.get("LANGUAGE")),Map.entry("condition",row.get("CARD_CONDITION")),
-            Map.entry("unit","개"),Map.entry("stock",row.get("STOCK")),Map.entry("version",row.get("INVENTORY_VERSION")),
+            Map.entry("unit","개"),Map.entry("game",row.get("GAME")),Map.entry("image",row.get("IMAGE")),Map.entry("stock",row.get("STOCK")),Map.entry("version",row.get("INVENTORY_VERSION")),
             Map.entry("createdAt",Instant.ofEpochSecond(created).toString()),Map.entry("updatedAt",Instant.ofEpochSecond(updated>0?updated:created).toString()));
     }
     Map<String,Object> find(String id,boolean lock){

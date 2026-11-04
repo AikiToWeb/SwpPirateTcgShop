@@ -1,17 +1,21 @@
-# SWP 재고관리 0.2.0
+# SWP 재고관리 0.3.0
 
 Windows 매장 PC용 설치형 프로그램입니다. **로컬 테스트**와 **SWP 매장 연결**을 구분합니다. 실제 스마트스토어 개설과 API 검증은 별도로 필요하며, 키가 없으면 연결 완료로 표시하지 않습니다.
 
 ## 실행 파일
 
-- `release/SWP-Inventory-0.2.0-x64-nsis.exe`: Windows x64 설치 프로그램
-- `release/SWP-Inventory-0.2.0-x64-portable.exe`: 설치 없이 실행
+- `release/SWP-Inventory-0.3.0-x64-nsis.exe`: Windows x64 설치 프로그램
+- `release/SWP-Inventory-0.3.0-x64-portable.exe`: 설치 없이 실행
 
 Node·Java·DB 서버를 사용자 PC에 별도로 설치할 필요는 없습니다. 매장 모드는 실행 중인 SWP API 서버가 필요합니다. 코드 서명이 없는 빌드입니다.
 
 ## 로컬 테스트
 
 최초 실행은 빈 SQLite DB로 시작합니다. 상품 등록·검색·입출고·실사 조정·전체/상품별 이력·백업을 사용할 수 있습니다. DB 위치는 이전 버전과 같은 `%APPDATA%\SWPInventoryTest\test\inventory.sqlite`입니다. 설치형과 portable이 같은 Windows 사용자에서 같은 데이터를 사용합니다.
+
+0.3.0에서는 **상품 등록 → 게임·상품명·언어 입력 → 공식 이미지 검색 → 이 이미지 선택 → 상품 등록** 순서로 이미지를 저장합니다. 등록한 이미지는 상품 목록과 재고 상세에 표시되고 재시작 후에도 유지됩니다. 검색은 인터넷 연결이 필요하며 별도의 Java·웹 서버는 필요하지 않습니다. 원피스 한국어판, Flesh and Blood 영어판, 리프트바운드 한국어판을 지원합니다. 번호·세트·판본을 확인해 선택하세요.
+
+기존 DB는 상품과 재고 이력을 보존하며 자동 확장합니다. 기존 0.2.0 실행 파일에는 이 화면이 없으므로 프로그램을 닫고 0.3.0 설치 파일로 업데이트하거나 새 portable을 실행하세요. 테스트 상품을 자동으로 넣지는 않습니다.
 
 입고·출고는 증감 수량, 실사는 **변경 후 목표 수량**을 입력합니다. 정수만 허용하며 상한은 99,999,999입니다. 음수 재고·중복 코드·중복 요청·오래된 수량 덮어쓰기를 차단합니다. 변경 사유·이전/이후 수량을 기록합니다.
 
@@ -49,6 +53,7 @@ Node.js 24+, Windows x64 기준입니다. 이 프로젝트 폴더에서 실행�
 npm.cmd ci
 npm.cmd test
 npm.cmd run test:desktop
+npm.cmd run test:images
 npm.cmd start
 npm.cmd run package
 ```

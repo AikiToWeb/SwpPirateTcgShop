@@ -1,8 +1,9 @@
 'use strict';
 const { ipcMain, dialog } = require('electron');
 const path = require('node:path');
+const { CardImages } = require('../lib/card-images.cjs');
 
-function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connection }) {
+function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connection, cardImages = new CardImages() }) {
   const local = action => connection ? connection.local(action) : action();
   const inventory = (method, input) => connection?.mode === 'store'
     ? connection.remote(method, input) : local(() => store[method](input));
@@ -12,6 +13,8 @@ function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connectio
     adjustStock: input => inventory('adjustStock', input),
     getHistory: input => inventory('getHistory', input),
     getOverview: () => inventory('getOverview'),
+    searchCardImages: input => cardImages.search(input),
+    loadCardImage: input => cardImages.load(input),
     getAppInfo: () => connection?.mode === 'store'
       ? { ...appInfo, profile: 'store', databasePath: '', serverUrl: connection.getConnection().serverUrl, smartStoreConnected: connection.storeInfo.smartStoreConnected === true }
       : appInfo,
@@ -44,7 +47,7 @@ function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connectio
       try {
         return { ok: true, data: await handler(input) };
       } catch (error) {
-        const safeCodes = new Set(['VALIDATION', 'CONFLICT', 'DUPLICATE_SKU', 'NOT_FOUND', 'INSUFFICIENT_STOCK', 'NO_CHANGE', 'BACKUP_EXISTS', 'BUSY', 'NOT_CONNECTED', 'UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNREACHABLE', 'SERVER_ERROR', 'NOT_CONFIGURED', 'UNSUPPORTED', 'SECURE_STORAGE_UNAVAILABLE']);
+        const safeCodes = new Set(['VALIDATION', 'CONFLICT', 'DUPLICATE_SKU', 'NOT_FOUND', 'INSUFFICIENT_STOCK', 'NO_CHANGE', 'BACKUP_EXISTS', 'BUSY', 'NOT_CONNECTED', 'UNAUTHORIZED', 'FORBIDDEN', 'SERVER_UNREACHABLE', 'SERVER_ERROR', 'NOT_CONFIGURED', 'UNSUPPORTED', 'SECURE_STORAGE_UNAVAILABLE', 'SOURCE_UNAVAILABLE']);
         return { ok: false, error: {
           code: safeCodes.has(error.code) ? error.code : 'DATABASE_ERROR',
           message: safeCodes.has(error.code) ? error.message : '데이터 처리에 실패했습니다. 다시 시도해 주세요.',

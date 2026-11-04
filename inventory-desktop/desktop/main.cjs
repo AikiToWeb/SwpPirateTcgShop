@@ -5,6 +5,7 @@ const { pathToFileURL } = require('node:url');
 const { InventoryStore } = require('../lib/inventory.cjs');
 const { registerInventoryIpc } = require('./ipc.cjs');
 const { StoreConnection } = require('../lib/store-connection.cjs');
+const { CardImages } = require('../lib/card-images.cjs');
 
 // Local test data stays isolated. Store mode uses only the explicitly paired API.
 app.setName('SWP Inventory');
@@ -54,7 +55,7 @@ if (!app.requestSingleInstanceLock()) {
     store = new InventoryStore(databasePath);
     const connection = new StoreConnection({ directory: userDirectory, safeStorage });
     unregister = registerInventoryIpc({
-      store, getWindow: () => window, trustedUrl, connection,
+      store, getWindow: () => window, trustedUrl, connection, cardImages: new CardImages(),
       appInfo: { name: 'SWP 재고관리', version: app.getVersion(), profile: 'test', databasePath, smartStoreConnected: false },
     });
     createWindow();

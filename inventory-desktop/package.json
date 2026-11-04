@@ -1,22 +1,26 @@
 {
   "name": "swp-inventory-desktop",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Single-PC inventory manager with isolated local tests and paired store API",
   "author": "SWP",
   "license": "UNLICENSED",
   "main": "desktop/main.cjs",
-  "engines": { "node": ">=24.0.0" },
+  "engines": {
+    "node": ">=24.0.0"
+  },
   "scripts": {
     "build": "node scripts/build.cjs",
     "start": "npm run build && electron .",
     "test": "node --test test/*.test.cjs",
     "test:desktop": "npm run build && electron scripts/desktop-smoke.cjs",
+    "test:images": "npm run build && electron scripts/card-images-smoke.cjs",
     "test:store": "npm run build && electron scripts/store-smoke.cjs",
     "package": "npm run build && electron-builder --win nsis portable --x64",
     "package:dir": "npm run build && electron-builder --win --dir --x64"
   },
   "dependencies": {
+    "cheerio": "1.2.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
   },
@@ -28,11 +32,22 @@
   "build": {
     "appId": "kr.swp.inventory.test",
     "productName": "SWP Inventory",
-    "directories": { "output": "release" },
-    "files": ["desktop/**/*", "lib/**/*", "dist/**/*", "index.html", "package.json"],
+    "directories": {
+      "output": "release"
+    },
+    "files": [
+      "desktop/**/*",
+      "lib/**/*",
+      "dist/**/*",
+      "index.html",
+      "package.json"
+    ],
     "asar": true,
     "win": {
-      "target": ["nsis", "portable"],
+      "target": [
+        "nsis",
+        "portable"
+      ],
       "signAndEditExecutable": false
     },
     "nsis": {
@@ -43,6 +58,8 @@
       "createDesktopShortcut": true,
       "deleteAppDataOnUninstall": false
     },
-    "portable": { "artifactName": "SWP-Inventory-${version}-${arch}-portable.${ext}" }
+    "portable": {
+      "artifactName": "SWP-Inventory-${version}-${arch}-portable.${ext}"
+    }
   }
 }

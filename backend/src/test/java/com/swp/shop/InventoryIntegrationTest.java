@@ -65,6 +65,12 @@ class InventoryIntegrationTest {
         jdbc.update("UPDATE inventory_devices SET expires=?,revoked=TRUE",s.now()+1000);
         web.perform(post("/shop-api/inventory/stock").header("Authorization","Bearer "+token).contentType("application/json").content(body(stockBody("IN",1,0,UUID.randomUUID().toString())))).andExpect(status().isUnauthorized());
     }
+    @Test void pairedStoreProductsIncludePersistedGameAndOfficialImageForDesktopDisplay() throws Exception {
+        String token=pair(),image="https://onepiece-cardgame.kr/fileDownload?downname=20250918_210023_2cf9a23a59";
+        jdbc.update("UPDATE cards SET game=?,image=? WHERE id='CARD_01'","원피스 카드게임",image);
+        web.perform(get("/shop-api/inventory/products").header("Authorization","Bearer "+token)).andExpect(status().isOk())
+            .andExpect(jsonPath("$.items[0].game").value("원피스 카드게임")).andExpect(jsonPath("$.items[0].image").value(image));
+    }
     @Test void pairingExpiryAndBrowserPairingAreRejected() throws Exception {
         String code=s.token();jdbc.update("INSERT INTO inventory_pairings VALUES(?,?,?,?)",s.hash(code),"admin","PC",s.now()-1);
         String input=body(Map.of("pairCode",code,"deviceName","PC"));
