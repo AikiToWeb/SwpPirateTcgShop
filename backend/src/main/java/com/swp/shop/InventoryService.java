@@ -15,6 +15,7 @@ public class InventoryService {
         @NotBlank @Pattern(regexp="IN|OUT|ADJUST") String type,@NotNull @Min(0) @Max(MAX_STOCK) Integer quantity,
         @NotBlank @Size(max=300) String reason,@NotNull @Min(0) Long expectedVersion,
         @NotBlank @Pattern(regexp="[a-fA-F0-9]{8}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{4}-[a-fA-F0-9]{12}") String operationId){}
+    public record PurchaseLimit(@NotNull @Min(0) @Max(1000000) Integer purchaseLimit,@NotNull @Min(0) Long expectedVersion){}
     public InventoryService(ShopService s,ObjectMapper json){this.s=s;this.json=json;}
     static InventoryException error(int status,String code,String message){return new InventoryException(status,code,message);}
     static void paging(int limit,int offset){if(limit<1||limit>200||offset<0)throw error(422,"VALIDATION","조회 범위를 확인해 주세요.");}
@@ -23,7 +24,7 @@ public class InventoryService {
         long created=((Number)row.get("CREATED")).longValue(),updated=((Number)row.get("INVENTORY_UPDATED")).longValue();
         return Map.ofEntries(Map.entry("id",row.get("ID")),Map.entry("sku",row.get("ID")),Map.entry("name",row.get("NAME")),
             Map.entry("setName",row.get("SET_NAME")),Map.entry("language",row.get("LANGUAGE")),Map.entry("condition",row.get("CARD_CONDITION")),
-            Map.entry("unit","개"),Map.entry("game",row.get("GAME")),Map.entry("image",row.get("IMAGE")),Map.entry("stock",row.get("STOCK")),Map.entry("version",row.get("INVENTORY_VERSION")),
+            Map.entry("unit","개"),Map.entry("game",row.get("GAME")),Map.entry("image",row.get("IMAGE")),Map.entry("purchaseLimit",row.get("PURCHASE_LIMIT")),Map.entry("stock",row.get("STOCK")),Map.entry("version",row.get("INVENTORY_VERSION")),
             Map.entry("createdAt",Instant.ofEpochSecond(created).toString()),Map.entry("updatedAt",Instant.ofEpochSecond(updated>0?updated:created).toString()));
     }
     Map<String,Object> find(String id,boolean lock){
@@ -80,5 +81,12 @@ public class InventoryService {
         var result=Map.<String,Object>of("product",product(find(body.productId(),false)),"movement",movement(movement));
         try{s.jdbc.update("INSERT INTO inventory_operations(operation_id,device_id,payload_hash,result_json,created) VALUES(?,?,?,?,?)",operation,device.id(),payload,json.writeValueAsString(result),s.now());}catch(com.fasterxml.jackson.core.JsonProcessingException e){throw new IllegalStateException("Cannot save inventory operation");}
         return result;
+    });}
+    public Map<String,Object> setPurchaseLimit(InventoryDeviceService.Device device,String id,PurchaseLimit body){return s.tx.execute(tx->{
+        var devices=s.jdbc.queryForList("SELECT d.id FROM inventory_devices d JOIN shop_users u ON u.id=d.actor_id WHERE d.id=? AND d.actor_id=? AND d.revoked=FALSE AND d.expires>? AND u.role='ADMIN' FOR UPDATE",device.id(),device.actorId(),s.now());
+        if(devices.isEmpty())throw error(401,"UNAUTHORIZED","매장 연결이 해제되었습니다.");
+        var row=find(id,true);if(((Number)row.get("INVENTORY_VERSION")).longValue()!=body.expectedVersion())throw error(409,"CONFLICT","상품 설정 또는 재고가 변경되었습니다. 최신 내용을 확인해 주세요.");
+        if(((Number)row.get("PURCHASE_LIMIT")).intValue()!=body.purchaseLimit())s.jdbc.update("UPDATE cards SET purchase_limit=?,inventory_version=inventory_version+1,inventory_updated=? WHERE id=?",body.purchaseLimit(),s.now(),id);
+        return Map.of("product",product(find(id,false)));
     });}
 }

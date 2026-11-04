@@ -6,7 +6,7 @@ const path = require('node:path');
 const { isAllowedImageUrl } = require('./card-images.cjs');
 
 const MAX_STOCK = 99_999_999;
-const productColumns = `id, sku, name, set_name AS setName, language, condition, unit, game, image,
+const productColumns = `id, sku, name, set_name AS setName, language, condition, unit, game, image, purchase_limit AS purchaseLimit,
   stock, version, created_at AS createdAt, updated_at AS updatedAt`;
 const movementColumns = `m.id, m.product_id AS productId, p.sku, p.name, m.type, m.delta,
   m.before_stock AS beforeStock, m.after_stock AS afterStock, m.reason,
@@ -54,7 +54,7 @@ class InventoryStore {
     try {
       this.db.exec('PRAGMA foreign_keys = ON; PRAGMA busy_timeout = 5000; PRAGMA journal_mode = WAL;');
       const current = this.db.prepare('PRAGMA user_version').get().user_version;
-      if (current > 2) fail('DB_VERSION', '더 새로운 버전의 DB입니다. 프로그램을 업데이트해 주세요.');
+      if (current > 3) fail('DB_VERSION', '더 새로운 버전의 DB입니다. 프로그램을 업데이트해 주세요.');
       if (current === 0) {
         this.db.exec(`BEGIN IMMEDIATE;
           CREATE TABLE products (
@@ -106,6 +106,20 @@ class InventoryStore {
           this.db.exec('PRAGMA user_version = 2; COMMIT;');
         } catch (error) { this.db.exec('ROLLBACK'); throw error; }
       }
+      if (current < 3) {
+        this.db.exec('BEGIN IMMEDIATE');
+        try {
+          this.db.exec("ALTER TABLE products ADD COLUMN purchase_limit INTEGER NOT NULL DEFAULT 0 CHECK(typeof(purchase_limit)='integer' AND purchase_limit BETWEEN 0 AND 1000000);");
+          for (const row of this.db.prepare('SELECT id, payload, result FROM operations').all()) {
+            const payload = JSON.parse(row.payload), result = JSON.parse(row.result);
+            if (payload.action === 'create') payload.purchaseLimit = 0;
+            const product = payload.action === 'create' ? result : result.product;
+            if (product) product.purchaseLimit = 0;
+            this.db.prepare('UPDATE operations SET payload=?, result=? WHERE id=?').run(JSON.stringify(payload), JSON.stringify(result), row.id);
+          }
+          this.db.exec('PRAGMA user_version = 3; COMMIT;');
+        } catch (error) { this.db.exec('ROLLBACK'); throw error; }
+      }
     } catch (error) {
       this.db.close();
       throw error;
@@ -151,7 +165,7 @@ class InventoryStore {
     return { items, total };
   }
 
-  createProduct({ sku, name, setName = '', language = '', condition = '', unit = '개', initialStock = 0, game = '', image = '', operationId } = {}) {
+  createProduct({ sku, name, setName = '', language = '', condition = '', unit = '개', initialStock = 0, game = '', image = '', purchaseLimit = 0, operationId } = {}) {
     const input = {
       sku: textValue(sku, '상품 코드', 64, true),
       name: textValue(name, '상품명', 200, true),
@@ -162,6 +176,7 @@ class InventoryStore {
       initialStock: integer(initialStock, '초기 재고'),
       game: textValue(game, '게임', 80),
       image: textValue(image, '이미지 주소', 1000),
+      purchaseLimit: integer(purchaseLimit, '계정당 누적 구매 한도', 0, 1000000),
     };
     if (input.game && !['원피스 카드게임', '플래시 앤 블러드', '플레시 앤 블러드', '리프트바운드'].includes(input.game)) fail('VALIDATION', '지원하는 게임 분류를 선택해 주세요.');
     if (input.image && !isAllowedImageUrl(input.image)) fail('VALIDATION', '지원하는 공식 카드 이미지 주소만 사용할 수 있습니다.');
@@ -172,9 +187,9 @@ class InventoryStore {
       }
       const now = new Date().toISOString();
       const result = this.db.prepare(`INSERT INTO products
-        (sku, name, set_name, language, condition, unit, stock, created_at, updated_at, game, image)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.sku, input.name, input.setName,
-        input.language, input.condition, input.unit, input.initialStock, now, now, input.game, input.image);
+        (sku, name, set_name, language, condition, unit, stock, created_at, updated_at, game, image, purchase_limit)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).run(input.sku, input.name, input.setName,
+        input.language, input.condition, input.unit, input.initialStock, now, now, input.game, input.image, input.purchaseLimit);
       const id = Number(result.lastInsertRowid);
       this.db.prepare(`INSERT INTO movements
         (product_id, type, delta, before_stock, after_stock, reason, created_at, operation_id)
@@ -207,6 +222,19 @@ class InventoryStore {
         .get(Number(movement.lastInsertRowid));
       return { product: this.product(productId), movement: { ...record } };
     });
+  }
+
+  setPurchaseLimit({ productId, purchaseLimit, expectedVersion } = {}) {
+    productId = integer(productId, '상품 번호', 1, Number.MAX_SAFE_INTEGER);
+    purchaseLimit = integer(purchaseLimit, '계정당 누적 구매 한도', 0, 1000000);
+    expectedVersion = integer(expectedVersion, '상품 버전', 1, Number.MAX_SAFE_INTEGER);
+    this.db.exec('BEGIN IMMEDIATE');
+    try {
+      const current = this.product(productId);
+      if (current.version !== expectedVersion) fail('CONFLICT', '상품 설정 또는 재고가 변경되었습니다. 최신 내용을 확인해 주세요.');
+      if (current.purchaseLimit !== purchaseLimit) this.db.prepare('UPDATE products SET purchase_limit=?, version=version+1, updated_at=? WHERE id=?').run(purchaseLimit, new Date().toISOString(), productId);
+      const result = { product: this.product(productId) }; this.db.exec('COMMIT'); return result;
+    } catch (error) { this.db.exec('ROLLBACK'); throw error; }
   }
 
   getHistory({ productId, limit = 100, offset = 0 } = {}) {

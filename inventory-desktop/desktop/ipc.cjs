@@ -11,6 +11,7 @@ function registerInventoryIpc({ store, getWindow, appInfo, trustedUrl, connectio
     listProducts: input => inventory('listProducts', input),
     createProduct: input => inventory('createProduct', input),
     adjustStock: input => inventory('adjustStock', input),
+    setPurchaseLimit: input => inventory('setPurchaseLimit', input),
     getHistory: input => inventory('getHistory', input),
     getOverview: () => inventory('getOverview'),
     searchCardImages: input => cardImages.search(input),

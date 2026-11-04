@@ -218,6 +218,9 @@ class StoreConnection {
       getHistory: () => ['/inventory/history?' + params({ productId: input.productId, limit: input.limit ?? 100, offset: input.offset ?? 0 })],
       getOverview: () => ['/inventory/overview'],
       adjustStock: () => ['/inventory/stock', 'POST', input],
+      setPurchaseLimit: () => ['/inventory/products/' + encodeURIComponent(input.productId) + '/purchase-limit', 'PUT', {
+        purchaseLimit: input.purchaseLimit, expectedVersion: input.expectedVersion,
+      }],
       getStoreInfo: () => ['/inventory/info'],
       getSmartStoreStatus: () => ['/inventory/smartstore/status'],
       listSmartStoreProducts: () => ['/inventory/smartstore/products?' + params({ query: input.query || '', page: input.page ?? 1 })],

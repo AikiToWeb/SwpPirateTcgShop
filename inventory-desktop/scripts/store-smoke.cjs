@@ -160,6 +160,99 @@ async function invoke(method, args) {
   assert.equal(result.ok, true, `${method}: ${result.error?.code || 'unknown error'}`);
   return result.data;
 }
+async function verifyPurchaseLimits() {
+  // Save through the actual web administrator form, then manage the same setting in the desktop.
+  await webWindow.reload();
+  await webWindow.webContents.executeJavaScript(`(async()=>{
+    const wait=async fn=>{const end=Date.now()+10000;while(!fn()){if(Date.now()>end)throw Error('Web limit form unavailable');await new Promise(r=>setTimeout(r,50));}};
+    await wait(()=>document.querySelector('.admin-open'));document.querySelector('.admin-open').click();
+    await wait(()=>[...document.querySelectorAll('tr')].some(r=>r.textContent.includes('integration-card')));
+    const row=[...document.querySelectorAll('tr')].find(r=>r.textContent.includes('integration-card'));
+    [...row.querySelectorAll('button')].find(b=>b.textContent==='수정').click();
+    await wait(()=>document.querySelector('[aria-label="계정당 구매 한도"]'));
+    const input=document.querySelector('[aria-label="계정당 구매 한도"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,'2');input.dispatchEvent(new Event('input',{bubbles:true}));
+    await new Promise(r=>setTimeout(r,50));document.querySelector('.admin-form').requestSubmit();
+  })()`);
+  const deadline=Date.now()+10000;
+  while((await api('/admin/products')).find(p=>p.id==='integration-card').purchaseLimit!==2) {
+    if(Date.now()>deadline)throw Error('Web purchase limit did not persist');await new Promise(r=>setTimeout(r,60));
+  }
+  await win.reload();
+  await win.webContents.executeJavaScript(`(async()=>{
+    const end=Date.now()+10000;let name;
+    while(!(name=[...document.querySelectorAll('.product-name')].find(b=>b.textContent==='격리 통합 검증 상품'))){if(Date.now()>end)throw Error('Desktop store product missing');await new Promise(r=>setTimeout(r,50));}
+    name.click();
+    while(document.querySelector('.selected-product .product-code')?.textContent.trim()!=='integration-card'){if(Date.now()>end)throw Error('Desktop selected product did not mount');await new Promise(r=>setTimeout(r,50));}
+  })()`);
+  await saveDesktopLimit(1);
+  assert.equal((await api('/cards','GET',undefined,false)).find(p=>p.id==='integration-card').purchaseLimit,1);
+  await saveDesktopLimit(2);
+  await win.webContents.executeJavaScript("document.querySelector('.purchase-limit-form').scrollIntoView({block:'center'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  fs.writeFileSync(path.join(directory,'purchase-limit-store.png'),(await win.webContents.capturePage()).toPNG());
+  const before=(await invoke('listProducts',{query:'integration-card'})).items[0];
+  const key=randomUUID(), payload={items:[{id:'integration-card',quantity:2}],request_key:key};
+  const first=await api('/orders','POST',payload);
+  assert.equal((await api('/orders','POST',payload)).id,first.id,'An identical retry must return the first order');
+  await webWindow.webContents.executeJavaScript("localStorage.setItem('swp-guest-cart',JSON.stringify([{id:'integration-card',quantity:1}]))");
+  await webWindow.loadURL(`${serverUrl}/?login=success`);
+  await webWindow.webContents.executeJavaScript(`(async()=>{
+    const end=Date.now()+10000;
+    while(!document.querySelector('article.product')||new URL(location.href).searchParams.has('login')){if(Date.now()>end)throw Error('An over-limit guest cart must not block login or product initialization');await new Promise(r=>setTimeout(r,80));}
+    if(!document.querySelector('.admin-open'))throw Error('Guest merge failure lost the signed-in session');
+    if(!localStorage.getItem('swp-guest-cart'))throw Error('A failed merge must preserve the guest cart');
+  })()`);
+  assert.deepEqual(await api('/cart'),[],'A rejected guest merge must preserve the existing server cart');
+  const rejected=await fetch(`${serverUrl}/shop-api/orders`,{method:'POST',headers:{Cookie:`swp_session=${cookie}`,Origin:serverUrl,'X-CSRF-Token':csrf,'Content-Type':'application/json'},body:JSON.stringify({items:[{id:'integration-card',quantity:1}],request_key:randomUUID()})});
+  assert.equal(rejected.status,409,'Splitting purchases into another order must not bypass the account limit');
+  assert.equal((await invoke('listProducts',{query:'integration-card'})).items[0].stock,before.stock-2);
+  await api(`/orders/${first.id}/cancel`,'POST');
+  const next=await api('/orders','POST',{...payload,request_key:randomUUID()});
+  await api(`/orders/${next.id}/cancel`,'POST');
+  const current=(await invoke('listProducts',{query:'integration-card'})).items[0];
+  assert.equal(current.stock,before.stock);
+  await invoke('setPurchaseLimit',{productId:current.id,purchaseLimit:0,expectedVersion:current.version});
+  console.log('PASS real web/desktop purchase-limit settings, cumulative checkout rejection, duplicate retry and cancellation recovery.');
+}
+async function saveDesktopLimit(value) {
+  const sku=await win.webContents.executeJavaScript("document.querySelector('.selected-product .product-code')?.textContent.trim()");
+  assert.ok(sku,'The purchase limit must belong to the selected product');
+  await win.webContents.executeJavaScript(`(async()=>{
+    const end=Date.now()+10000;
+    while(!document.querySelector('[aria-label="계정당 구매 한도"]')){if(Date.now()>end)throw Error('Desktop purchase-limit field missing');await new Promise(r=>setTimeout(r,50));}
+    const input=document.querySelector('[aria-label="계정당 구매 한도"]');
+    Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,${JSON.stringify(String(value))});input.dispatchEvent(new Event('input',{bubbles:true}));
+    await new Promise(r=>setTimeout(r,50));
+    [...document.querySelectorAll('button')].find(b=>b.textContent==='구매 한도 저장').click();
+    while(!document.querySelector('[aria-label="계정당 구매 한도"]')||document.querySelector('[aria-label="계정당 구매 한도"]').disabled){if(Date.now()>end)throw Error('Desktop purchase-limit save incomplete');await new Promise(r=>setTimeout(r,50));}
+    await new Promise(r=>setTimeout(r,150));
+  })()`);
+  const deadline=Date.now()+10000;
+  while((await invoke('listProducts',{query:sku})).items.find(p=>p.sku===sku)?.purchaseLimit!==value){
+    if(Date.now()>deadline)throw Error('Desktop purchase-limit value did not persist');await new Promise(r=>setTimeout(r,60));
+  }
+}
+async function verifyLocalPurchaseLimit() {
+  await win.reload();
+  await win.webContents.executeJavaScript(`(async()=>{
+    const wait=async fn=>{const end=Date.now()+10000;while(!fn()){if(Date.now()>end)throw Error('Local registration unavailable');await new Promise(r=>setTimeout(r,50));}};
+    await wait(()=>[...document.querySelectorAll('header button')].some(b=>b.textContent==='상품 등록'&&!b.disabled));
+    [...document.querySelectorAll('header button')].find(b=>b.textContent==='상품 등록').click();
+    await wait(()=>document.querySelector('.registration-dialog[open]'));
+    for(const [key,value] of Object.entries({sku:'local-limit-card',name:'격리 한도 검증',purchaseLimit:'5'})){
+      const input=document.querySelector('.registration-dialog [name="'+key+'"]');Object.getOwnPropertyDescriptor(HTMLInputElement.prototype,'value').set.call(input,value);input.dispatchEvent(new Event('input',{bubbles:true}));await new Promise(r=>setTimeout(r,40));
+    }
+    document.querySelector('.registration-dialog form').requestSubmit();await wait(()=>!document.querySelector('.registration-dialog[open]'));
+  })()`);
+  assert.equal((await invoke('listProducts',{})).items[0].purchaseLimit,5);
+  await saveDesktopLimit(3);
+  assert.equal((await invoke('listProducts',{})).items[0].purchaseLimit,3);
+  await win.webContents.executeJavaScript("document.querySelector('.purchase-limit-form').scrollIntoView({block:'center'});new Promise(r=>requestAnimationFrame(()=>requestAnimationFrame(r)))");
+  fs.writeFileSync(path.join(directory,'purchase-limit-local.png'),(await win.webContents.capturePage()).toPNG());
+  await win.reload();
+  assert.equal((await invoke('listProducts',{})).items[0].purchaseLimit,3);
+  console.log('PASS local desktop purchase-limit registration, update and reload persistence.');
+}
 async function javaStart() {
   const socket = http.createServer();
   await new Promise(resolve => socket.listen(0, '127.0.0.1', resolve));
@@ -244,10 +337,10 @@ app.whenReady().then(async () => {
   })()`);
   store = new InventoryStore(path.join(directory, 'local-test.sqlite'));
   const connection = new StoreConnection({ directory, safeStorage });
-  win = new BrowserWindow({ show: false, webPreferences: { preload: path.join(root, 'desktop/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true } });
+  win = new BrowserWindow({ show: false, width: 1440, height: 1000, webPreferences: { preload: path.join(root, 'desktop/preload.cjs'), contextIsolation: true, nodeIntegration: false, sandbox: true, offscreen: true, backgroundThrottling: false } });
   const indexPath = path.join(root, 'index.html');
   unregister = registerInventoryIpc({ store, connection, getWindow: () => win, trustedUrl: pathToFileURL(indexPath).href,
-    appInfo: { name: 'SWP 재고관리', version: '0.2.0', profile: 'test', databasePath: store.filePath, smartStoreConnected: false } });
+    appInfo: { name: 'SWP 재고관리', version: require('../package.json').version, profile: 'test', databasePath: store.filePath, smartStoreConnected: false } });
   await win.loadFile(indexPath);
   await win.webContents.executeJavaScript('new Promise(resolve => setTimeout(resolve, 100))');
   assert.equal((await invoke('listProducts', {})).total, 0);
@@ -281,11 +374,13 @@ app.whenReady().then(async () => {
   await api(`/orders/${order.id}/cancel`, 'POST');
   assert.equal((await invoke('listProducts', { query: 'integration-card' })).items[0].stock, 15);
   assert.equal((await invoke('getHistory', { productId: product.id })).total, 4);
+  await verifyPurchaseLimits();
   const smart = await invoke('getSmartStoreStatus');
   assert.equal(smart.configured, false); assert.equal(smart.connected, false);
   assert.equal(smart.syncEnabled, false);
   await invoke('useLocalTest');
   assert.equal((await invoke('listProducts', {})).total, 0, 'Store products must never be copied to the local test DB.');
+  await verifyLocalPurchaseLimit();
   await invoke('useStore');
   assert.equal((await invoke('listProducts', {})).total, process.env.INVENTORY_TEST_CARD_IMAGES === '1' ? 4 : 1);
   await invoke('disconnectStore');

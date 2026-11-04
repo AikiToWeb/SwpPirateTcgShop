@@ -4,6 +4,9 @@ import './rolling.css';
 import AdminPanel from './AdminPanel.jsx';
 
 const won = n => `${Number(n).toLocaleString('ko-KR')}원`;
+const purchaseLimit = p => Number.isSafeInteger(p?.purchaseLimit) && p.purchaseLimit > 0 ? p.purchaseLimit : 0;
+const purchaseLimitText = p => purchaseLimit(p) ? `계정당 누적 ${purchaseLimit(p).toLocaleString('ko-KR')}장 한도` : '구매 수량 제한 없음';
+const cartLimitReached = (p, quantity) => purchaseLimit(p) > 0 && quantity >= purchaseLimit(p);
 const image = p => p.image ? (p.image.startsWith('https://') ? p.image : `/rolling-assets/${p.image}`) : '/swp-assets/card-placeholder.svg';
 function stored(key, fallback) { try { return JSON.parse(localStorage.getItem(key)) ?? fallback; } catch { return fallback; } }
 function store(key, value) { try { localStorage.setItem(key, JSON.stringify(value)); } catch {} }
@@ -18,7 +21,7 @@ function Modal({ title, children, close }) {
   }}><button className="close" onClick={close} aria-label="닫기">×</button>{children}</dialog>;
 }
 
-function ProductCard({ product: p, number, saved, busy, save, add, detail }) {
+function ProductCard({ product: p, number, saved, busy, save, add, detail, cartQuantity }) {
   return <article className="product">
     <div className="product-photo"><span className="photo-index">{String(number).padStart(2, '0')}</span>
       <button className={`save ${saved ? 'is-saved' : ''}`} aria-label={`${p.name} 바인더 저장`} aria-pressed={saved} disabled={busy} onClick={save}>{saved ? '♥' : '♡'}</button>
@@ -28,8 +31,9 @@ function ProductCard({ product: p, number, saved, busy, save, add, detail }) {
     <div className="product-meta"><span>{p.set}</span><span>{p.id}</span></div>
     <button className="product-title" onClick={detail}>{p.name} <span>↗</span></button>
     <div className="product-bottom"><div><strong>{won(p.price)}</strong><span className="stock">{p.stock ? `재고 ${p.stock}장` : '품절'}</span></div>
-      <button className="add" disabled={busy || !p.stock} aria-label={`${p.name} 장바구니 담기`} onClick={add}>+</button>
+      <button className="add" disabled={busy || !p.stock || cartLimitReached(p, cartQuantity)} aria-label={`${p.name} 장바구니 담기`} onClick={add}>+</button>
     </div>
+    <p className="purchase-limit-label">{purchaseLimitText(p)}</p>
   </article>;
 }
 
@@ -64,12 +68,17 @@ function App() {
     const quantities = new Map();
     for (const i of items) {
       const p = products.find(p => p.id === i?.id);
-      if (p && Number.isInteger(i.quantity) && i.quantity > 0 && p.stock > 0) quantities.set(i.id, Math.min(p.stock, i.quantity));
+      if (p && Number.isInteger(i.quantity) && i.quantity > 0 && p.stock > 0) quantities.set(i.id, Math.min(p.stock, purchaseLimit(p) || p.stock, i.quantity));
     }
     return [...quantities].map(([id, quantity]) => ({ id, quantity }));
   }
   async function initialize() {
     setLoading(true); setError('');
+    const loginUrl = new URL(location.href);
+    const login = loginUrl.searchParams.get('login');
+    // Consume the callback flag before requests so a failed merge cannot repeat on retry.
+    if (loginUrl.searchParams.has('login')) { loginUrl.searchParams.delete('login'); history.replaceState(null, '', loginUrl.pathname + loginUrl.search + loginUrl.hash); }
+    let mergeFailure = '';
     try {
       const [products, me, schedule, classifications] = await Promise.all([api('/cards'), api('/me'), api('/events'), api('/games')]);
       setGames(classifications); setGame(g => classifications.includes(g) ? g : classifications[0] || '');
@@ -77,12 +86,18 @@ function App() {
       if (me.user) {
         const [collection, basket] = await Promise.all([api('/binder'), api('/cart')]);
         let next = basket;
-        if (new URLSearchParams(location.search).get('login') === 'success') {
-          const merged = new Map(basket.map(i => [i.id, i.quantity]));
-          for (const i of validGuest(stored('swp-guest-cart', []), products)) merged.set(i.id, (merged.get(i.id) || 0) + i.quantity);
-          next = validGuest([...merged].map(([id, quantity]) => ({ id, quantity })), products);
-          await api('/cart', { method: 'PUT', body: { items: next } });
-          store('swp-guest-cart', []);
+        if (login === 'success') {
+          try {
+            const merged = new Map(basket.map(i => [i.id, i.quantity]));
+            for (const i of validGuest(stored('swp-guest-cart', []), products)) merged.set(i.id, (merged.get(i.id) || 0) + i.quantity);
+            const mergedItems = validGuest([...merged].map(([id, quantity]) => ({ id, quantity })), products);
+            await api('/cart', { method: 'PUT', body: { items: mergedItems } });
+            next = mergedItems;
+            store('swp-guest-cart', []);
+          } catch (failure) {
+            next = basket;
+            mergeFailure = `비회원 장바구니를 합치지 못해 기존 계정 장바구니를 불러왔습니다. 비회원 장바구니는 보관됩니다. ${failure.message}`;
+          }
         }
         setSaved(collection); setCart(next.filter(i => products.some(p => p.id === i.id)));
       } else {
@@ -90,8 +105,7 @@ function App() {
         setSaved(Array.isArray(collection) ? collection.filter(id => products.some(p => p.id === id)) : []);
         setCart(validGuest(stored('swp-guest-cart', []), products));
       }
-      const login = new URLSearchParams(location.search).get('login');
-      if (login) { setToast(login === 'success' ? '로그인 완료' : '로그인이 취소되었거나 실패했습니다.'); history.replaceState(null, '', location.pathname + location.hash); }
+      if (login) setToast(login === 'success' ? mergeFailure || '로그인 완료' : '로그인이 취소되었거나 실패했습니다.');
     } catch (e) { setError(e.message); } finally { setLoading(false); }
   }
   useEffect(() => { initialize(); }, []);
@@ -119,10 +133,12 @@ function App() {
   function add(p) { action(async () => {
     const n = (cart.find(i => i.id === p.id)?.quantity || 0) + 1;
     if (n > p.stock) throw new Error(`재고 한도: ${p.stock}장`);
+    if (purchaseLimit(p) && n > purchaseLimit(p)) throw new Error(`${purchaseLimitText(p)}입니다. 기존 주문을 포함한 구매 가능 여부는 주문 시 확인합니다.`);
     await changeCart([...cart.filter(i => i.id !== p.id), { id: p.id, quantity: n }]); setToast(`${p.name} 담기 완료`);
   }); }
   function quantity(p, n) { action(async () => {
     if (n > p.stock) throw new Error(`재고 한도: ${p.stock}장`);
+    if (purchaseLimit(p) && n > purchaseLimit(p) && n > (cart.find(i => i.id === p.id)?.quantity || 0)) throw new Error(`${purchaseLimitText(p)}입니다. 기존 주문을 포함한 구매 가능 여부는 주문 시 확인합니다.`);
     await changeCart(n <= 0 ? cart.filter(i => i.id !== p.id) : cart.map(i => i.id === p.id ? { ...i, quantity: n } : i));
   }); }
   function save(p) { action(async () => {
@@ -152,7 +168,7 @@ function App() {
       <div className="section-heading"><h1 id="shop-title">{binder ? '내 바인더' : '최신 등록 카드'} <span className="count">{String(visible.length).padStart(2, '0')}</span></h1><button className="refresh" disabled={busy || loading} onClick={() => action(async () => { setCards(await api('/cards')); setToast('상품 정보 갱신 완료'); })}>새로고침 ↻</button></div>
       <div className="game-tabs" role="group" aria-label="게임 선택">{games.map(g => <button key={g} aria-pressed={g === game} onClick={() => setGame(g)}>{g}</button>)}</div>
       <div className="tools"><label className="search"><span aria-hidden="true">⌕</span><input ref={searchRef} type="search" aria-label="카드 검색" placeholder="카드명 · 세트 코드 검색" value={search} onChange={e => setSearch(e.target.value)} /><kbd>/</kbd></label><div className="filters"><label className="checkbox"><input type="checkbox" checked={available} onChange={e => setAvailable(e.target.checked)} />재고 있는 카드</label><select aria-label="정렬" value={sort} onChange={e => setSort(e.target.value)}><option value="recent">최근 등록순</option><option value="low">낮은 가격순</option><option value="high">높은 가격순</option><option value="name">이름순</option></select></div></div>
-      <div className="product-grid">{loading ? <div className="empty" role="status">상품 불러오는 중</div> : error ? <div className="empty" role="alert"><p>{error}</p><button onClick={initialize}>다시 연결</button></div> : visible.length ? visible.map((p, i) => <ProductCard key={p.id} product={p} number={i + 1} saved={saved.includes(p.id)} busy={busy} save={() => save(p)} add={() => add(p)} detail={() => setModal({ type: 'detail', id: p.id })} />) : <div className="empty"><p>{binder ? '저장된 카드가 없습니다.' : cards.length ? '조건에 맞는 상품이 없습니다.' : '등록된 상품이 없습니다.'}</p>{cards.length > 0 && <button onClick={reset}>전체 카드 보기 ↗</button>}</div>}</div>
+      <div className="product-grid">{loading ? <div className="empty" role="status">상품 불러오는 중</div> : error ? <div className="empty" role="alert"><p>{error}</p><button onClick={initialize}>다시 연결</button></div> : visible.length ? visible.map((p, i) => <ProductCard key={p.id} product={p} cartQuantity={cart.find(item => item.id === p.id)?.quantity || 0} number={i + 1} saved={saved.includes(p.id)} busy={busy} save={() => save(p)} add={() => add(p)} detail={() => setModal({ type: 'detail', id: p.id })} />) : <div className="empty"><p>{binder ? '저장된 카드가 없습니다.' : cards.length ? '조건에 맞는 상품이 없습니다.' : '등록된 상품이 없습니다.'}</p>{cards.length > 0 && <button onClick={reset}>전체 카드 보기 ↗</button>}</div>}</div>
       <div className="shelf-foot"><button onClick={() => setModal({ type: 'info', title: 'NM · Near Mint', text: '표면과 모서리의 손상이 매우 적은 상태입니다. 상품별 컨디션을 확인하세요.' })}>카드 컨디션 안내 ↗</button></div>
     </section>
       <section className="table wrap" id="table" aria-labelledby="table-title"><div className="table-intro"><h2 id="table-title">매장 이벤트</h2></div><div className="events">{events.map(event => <article key={event.id}><div className="event-time">{new Date(event.startsAt).toLocaleDateString('ko-KR', { timeZone: 'Asia/Seoul', month: '2-digit', day: '2-digit' })}<br />{new Date(event.startsAt).toLocaleTimeString('ko-KR', { timeZone: 'Asia/Seoul', hour: '2-digit', minute: '2-digit', hour12: false })}</div><div><span className="event-label">{event.game}</span><h3>{event.title}</h3></div><button aria-label={`${event.title} 안내`} onClick={() => setModal({ type: 'info', title: event.title, text: `${new Date(event.startsAt).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · ${event.description}` })}>↗</button></article>)}{!loading && !events.length && <p>등록된 일정이 없습니다.</p>}{events.some(e => e.sample) && <p className="event-source">참고 사이트에서 등록한 예시 일정 · 참가 접수 미지원</p>}</div></section>
@@ -160,8 +176,8 @@ function App() {
     <footer className="footer wrap"><div><a className="footer-brand" href="/rolling.html">SWP shop</a></div><div className="footer-bottom"><span>매장 수령 주문 · 온라인 결제 없음</span><span>상품 이미지의 권리는 각 저작권자에게 있습니다.</span></div></footer>
     {modal && <Modal key={modal.type} title={modal.type === 'admin' ? '상점 관리' : modal.type === 'cart' ? '장바구니' : modal.type === 'orders' ? '주문 내역' : detail?.name || modal.title || '안내'} close={() => setModal(null)}>
       {modal.type === 'admin' && <AdminPanel api={api} games={games} changed={async () => { setCards(await api('/cards')); setEvents(await api('/events')); }} />}
-      {detail && <div className="detail-layout"><div className="detail-photo"><img src={image(detail)} alt={`${detail.name} 카드 앞면`} /></div><div><span className="eyebrow">{detail.set} · {detail.id}</span><h2>{detail.name}</h2><p className="english-name">{detail.en}</p><dl><div><dt>컨디션</dt><dd>{detail.condition}</dd></div><div><dt>언어</dt><dd>{detail.language}</dd></div><div><dt>재고</dt><dd>{detail.stock}장</dd></div></dl><strong className="detail-price">{won(detail.price)}</strong><button className="solid" disabled={busy || !detail.stock} onClick={() => add(detail)}>장바구니 담기 +</button></div></div>}
-      {modal.type === 'cart' && <><h2>장바구니</h2>{cartLines.length ? <><div className="cart-lines">{cartLines.map(i => <div className="cart-line" key={i.id}><img src={image(i.product)} alt={i.product.name} /><div><strong>{i.product.name}</strong><small>{i.product.condition} · {i.product.language}</small><div className="quantity"><button disabled={busy} aria-label={`${i.product.name} 수량 줄이기`} onClick={() => quantity(i.product, i.quantity - 1)}>−</button><span>{i.quantity}</span><button disabled={busy || i.quantity >= i.product.stock} aria-label={`${i.product.name} 수량 늘리기`} onClick={() => quantity(i.product, i.quantity + 1)}>+</button></div></div><div><strong>{won(i.product.price * i.quantity)}</strong><button className="remove" disabled={busy} onClick={() => quantity(i.product, 0)}>삭제</button></div></div>)}</div><div className="cart-total"><span>상품 합계</span><strong>{won(total)}</strong></div><p className="dialog-note">매장 수령 주문 · 온라인 결제 없음 · 주문 시 서버에서 재고와 가격을 확인합니다.</p><button className="solid" disabled={busy} onClick={checkout}>{busy ? '처리 중' : account.user ? '매장 수령 주문 접수' : '카카오 로그인 후 주문'}</button></> : <p>장바구니가 비어 있습니다.</p>}</>}
+      {detail && <div className="detail-layout"><div className="detail-photo"><img src={image(detail)} alt={`${detail.name} 카드 앞면`} /></div><div><span className="eyebrow">{detail.set} · {detail.id}</span><h2>{detail.name}</h2><p className="english-name">{detail.en}</p><dl><div><dt>컨디션</dt><dd>{detail.condition}</dd></div><div><dt>언어</dt><dd>{detail.language}</dd></div><div><dt>재고</dt><dd>{detail.stock}장</dd></div><div><dt>구매 한도</dt><dd>{purchaseLimitText(detail)}</dd></div></dl><p className="purchase-limit-note">계정별 주문 수량을 누적해 적용합니다. 취소 주문은 제외하고 수령 완료 주문은 포함합니다. 기존 주문을 포함한 구매 가능 여부는 주문 시 서버에서 확인합니다.</p><strong className="detail-price">{won(detail.price)}</strong><button className="solid" disabled={busy || !detail.stock || cartLimitReached(detail, cart.find(item => item.id === detail.id)?.quantity || 0)} onClick={() => add(detail)}>장바구니 담기 +</button></div></div>}
+      {modal.type === 'cart' && <><h2>장바구니</h2>{cartLines.length ? <><div className="cart-lines">{cartLines.map(i => <div className="cart-line" key={i.id}><img src={image(i.product)} alt={i.product.name} /><div><strong>{i.product.name}</strong><small>{i.product.condition} · {i.product.language}</small><small className="purchase-limit-label">{purchaseLimitText(i.product)}</small><div className="quantity"><button disabled={busy} aria-label={`${i.product.name} 수량 줄이기`} onClick={() => quantity(i.product, i.quantity - 1)}>−</button><span>{i.quantity}</span><button disabled={busy || i.quantity >= i.product.stock || cartLimitReached(i.product, i.quantity)} aria-label={`${i.product.name} 수량 늘리기`} onClick={() => quantity(i.product, i.quantity + 1)}>+</button></div></div><div><strong>{won(i.product.price * i.quantity)}</strong><button className="remove" disabled={busy} onClick={() => quantity(i.product, 0)}>삭제</button></div></div>)}</div><div className="cart-total"><span>상품 합계</span><strong>{won(total)}</strong></div><p className="dialog-note">매장 수령 주문 · 온라인 결제 없음 · 주문 시 서버에서 재고·가격과 기존 주문을 포함한 계정당 누적 구매 한도를 확인합니다. 취소 주문은 제외하고 수령 완료 주문은 포함합니다.</p><button className="solid" disabled={busy} onClick={checkout}>{busy ? '처리 중' : account.user ? '매장 수령 주문 접수' : '카카오 로그인 후 주문'}</button></> : <p>장바구니가 비어 있습니다.</p>}</>}
       {modal.type === 'orders' && <><h2>주문 내역</h2>{orders.length ? orders.map(o => <article className="order-item" key={o.id}><h3>{o.id}</h3><p>{new Date(o.created * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · {o.status} · {won(o.total)}</p><p>{o.items.map(i => `${i.name} ${i.quantity}장`).join(', ')}</p>{o.status === '접수' && <button className="cancel-order" disabled={busy} onClick={() => cancel(o)}>주문 취소</button>}</article>) : <p>주문 내역이 없습니다.</p>}</>}
       {modal.type === 'info' && <><h2>{modal.title}</h2><p>{modal.text}</p><button className="solid" onClick={() => setModal(null)}>확인</button></>}
       {toast && <p className="dialog-feedback" role="status">{toast}</p>}

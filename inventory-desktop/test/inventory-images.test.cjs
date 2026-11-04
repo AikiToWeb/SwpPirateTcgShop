@@ -15,7 +15,7 @@ test('local registration persists game and selected official image across reopen
   const input = { sku: 'OP08-001', name: '토니토니 쵸파', game: '원피스 카드게임', language: '한국어', image, initialStock: 2, operationId: randomUUID() };
   const created = store.createProduct(input); assert.equal(created.game, input.game); assert.equal(created.image, image); assert.deepEqual(store.createProduct(input), created);
   await store.backupTo(path.join(directory, 'backup.sqlite')); store.close();
-  store = new InventoryStore(filename); assert.deepEqual(store.listProducts({ query: input.sku }).items[0], created); assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2); store.close();
+  store = new InventoryStore(filename); assert.deepEqual(store.listProducts({ query: input.sku }).items[0], created); assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3); store.close();
   const copy = new InventoryStore(path.join(directory, 'backup.sqlite')); assert.equal(copy.listProducts().items[0].image, image); copy.close();
 });
 
@@ -35,11 +35,11 @@ test('v1 migration preserves inventory histories and existing create/adjust UUID
   db.prepare('INSERT INTO operations VALUES(?,?,?)').run(adjustId, JSON.stringify({ action: 'adjust', productId: 1, type: 'IN', quantity: 1, reason: '이전 입고', expectedVersion: 1 }), JSON.stringify({ product: changed, movement })); db.close();
   const store = new InventoryStore(filename);
   try {
-    assert.deepEqual(store.listProducts().items[0], { ...changed, game: '', image: '' }); assert.equal(store.getHistory().total, 2);
-    assert.deepEqual(store.createProduct({ sku: 'LEGACY', name: '이전 상품', language: '한국어', condition: 'NM', initialStock: 3, operationId: createId }), { ...legacyProduct, game: '', image: '' });
-    assert.deepEqual(store.adjustStock({ productId: 1, type: 'IN', quantity: 1, reason: '이전 입고', expectedVersion: 1, operationId: adjustId }), { product: { ...changed, game: '', image: '' }, movement });
+    assert.deepEqual(store.listProducts().items[0], { ...changed, game: '', image: '', purchaseLimit: 0 }); assert.equal(store.getHistory().total, 2);
+    assert.deepEqual(store.createProduct({ sku: 'LEGACY', name: '이전 상품', language: '한국어', condition: 'NM', initialStock: 3, operationId: createId }), { ...legacyProduct, game: '', image: '', purchaseLimit: 0 });
+    assert.deepEqual(store.adjustStock({ productId: 1, type: 'IN', quantity: 1, reason: '이전 입고', expectedVersion: 1, operationId: adjustId }), { product: { ...changed, game: '', image: '', purchaseLimit: 0 }, movement });
     assert.equal(store.getHistory().total, 2); assert.equal(store.db.prepare('SELECT count(*) AS total FROM operations').get().total, 2);
-    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 2);
+    assert.equal(store.db.prepare('PRAGMA user_version').get().user_version, 3);
   } finally { store.close(); }
   const reopened = new InventoryStore(filename); assert.equal(reopened.getOverview().totalStock, 4); assert.equal(reopened.getHistory().total, 2); reopened.close();
 });

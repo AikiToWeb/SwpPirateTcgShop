@@ -86,6 +86,15 @@ test('mode switching preserves test isolation and rejects unsupported remote reg
   await f.connection.useStore();
   assert.equal(f.connection.mode, 'store');
 });
+test('purchase limit settings use the paired PUT endpoint and preserve the selected inventory source', async t => {
+  const f = await fixture(t); await f.connect();
+  f.setHandler(async (req, res, body) => {
+    if (!req.url.endsWith('/purchase-limit')) return false;
+    res.end(JSON.stringify({ product: { id: 'CARD_01', purchaseLimit: body.purchaseLimit, version: 2 } })); return true;
+  });
+  const result = await f.connection.remote('setPurchaseLimit', { productId: 'CARD_01', purchaseLimit: 3, expectedVersion: 1 });
+  assert.equal(result.product.purchaseLimit, 3); assert.equal(f.requests.at(-1).path, '/shop-api/inventory/products/CARD_01/purchase-limit'); assert.equal(f.requests.at(-1).method, 'PUT'); assert.deepEqual(f.requests.at(-1).body, { purchaseLimit: 3, expectedVersion: 1 }); assert.equal(f.connection.mode, 'store');
+});
 
 test('pending requests prevent changing credentials or switching databases', async t => {
   const f = await fixture(t); await f.connect();
