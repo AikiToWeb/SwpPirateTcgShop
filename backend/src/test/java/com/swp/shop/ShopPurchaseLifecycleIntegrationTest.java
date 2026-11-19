@@ -4,6 +4,8 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import jakarta.servlet.http.Cookie;
 import java.util.*;
 import org.junit.jupiter.api.*;
+import static org.hamcrest.Matchers.everyItem;
+import static org.hamcrest.Matchers.is;
 import static org.junit.jupiter.api.Assertions.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
@@ -91,6 +93,39 @@ class ShopPurchaseLifecycleIntegrationTest {
         web.perform(auth(get("/shop-api/cart"),"buyer")).andExpect(jsonPath("$[0].quantity").value(2));
         web.perform(auth(put("/shop-api/cart"),"buyer").content("{\"items\":[]}" )).andExpect(status().isOk());
         web.perform(auth(get("/shop-api/cart"),"buyer")).andExpect(jsonPath("$.length()").value(0));
+    }
+
+    @Test
+    void stockHistoryFiltersBeforeTakingTheNewestHundred() throws Exception {
+        web.perform(auth(post("/shop-api/admin/products"), "admin")
+            .content(body(Map.of("product", product(true), "stock", 0)))).andExpect(status().isOk());
+        var otherProduct = new LinkedHashMap<>(product(true));
+        otherProduct.put("id", "FLOW-002");
+        web.perform(auth(post("/shop-api/admin/products"), "admin")
+            .content(body(Map.of("product", otherProduct, "stock", 2)))).andExpect(status().isOk());
+
+        for (int balance = 1; balance <= 101; balance++) {
+            shop.movement("FLOW-001", "admin", 1, balance, "검증 입고", null);
+        }
+        web.perform(auth(post("/shop-api/admin/products/FLOW-002/stock"), "admin")
+            .content(body(Map.of("delta", 1, "expectedStock", 2, "reason", "별도 상품 입고"))))
+            .andExpect(status().isOk());
+
+        String endpoint = "/shop-api/admin/movements";
+        web.perform(get(endpoint).param("cardId", "FLOW-001")).andExpect(status().isUnauthorized());
+        web.perform(auth(get(endpoint).param("cardId", "FLOW-001"), "buyer")).andExpect(status().isForbidden());
+        web.perform(auth(get(endpoint), "admin"))
+            .andExpect(jsonPath("$.length()").value(100))
+            .andExpect(jsonPath("$[0].CARD_ID").value("FLOW-002"));
+        web.perform(auth(get(endpoint).param("cardId", "FLOW-001"), "admin"))
+            .andExpect(jsonPath("$.length()").value(100))
+            .andExpect(jsonPath("$[*].CARD_ID", everyItem(is("FLOW-001"))))
+            .andExpect(jsonPath("$[0].BALANCE").value(101))
+            .andExpect(jsonPath("$[0].REASON").value("검증 입고"))
+            .andExpect(jsonPath("$[99].BALANCE").value(2));
+        web.perform(auth(get(endpoint).param("cardId", "flow-001"), "admin"))
+            .andExpect(jsonPath("$.length()").value(0));
+        web.perform(auth(get(endpoint).param("cardId", " "), "admin")).andExpect(status().isBadRequest());
     }
 
 }

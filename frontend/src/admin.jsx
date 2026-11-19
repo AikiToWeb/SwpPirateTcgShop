@@ -14,7 +14,9 @@ const sections = [
 ];
 
 function AdminApp() {
-  const requestedSection = new URLSearchParams(window.location.search).get('section');
+  const search = new URLSearchParams(window.location.search);
+  const requestedSection = search.get('section');
+  const cardId = search.get('cardId');
   const [tab, label] = sections.find(([id]) => requestedSection === id) || sections[0];
   const [access, setAccess] = useState({});
   const [attempt, setAttempt] = useState(0);
@@ -73,7 +75,7 @@ function AdminApp() {
                 aria-current={tab === id ? 'page' : undefined}>{title}</a>
             ))}
           </nav>
-          <AdminPanel api={api} tab={tab} label={label} busy={busy} setBusy={setBusy} />
+          <AdminPanel api={api} tab={tab} label={label} busy={busy} setBusy={setBusy} cardId={cardId} />
         </>
       ) : account.user ? (
         <p className="admin-access">관리자 권한이 필요합니다.</p>

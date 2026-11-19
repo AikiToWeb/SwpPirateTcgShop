@@ -2,9 +2,10 @@ import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PricingReference from './PricingReference.jsx';
 import InventoryDevices from './InventoryDevices.jsx';
 import CardImageSearch from './CardImageSearch.jsx';
+import ProductInventory from './ProductInventory.jsx';
 
 const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, purchaseLimit: 0, image: '', active: true };
-export default function AdminPanel({ api, tab, label, busy, setBusy }) {
+export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
   const [data, setData] = useState(null);
   const [games, setGames] = useState([]);
   const [editor, setEditor] = useState(null), [stock, setStock] = useState(null), [event, setEvent] = useState(null);
@@ -16,15 +17,16 @@ export default function AdminPanel({ api, tab, label, busy, setBusy }) {
   const load = useCallback(async signal => {
     const endpoint = tab === 'database' ? 'summary' : tab;
     const needsGames = tab === 'products' || tab === 'events';
+    const query = tab === 'movements' && cardId ? `?cardId=${encodeURIComponent(cardId)}` : '';
     const [records, classifications] = await Promise.all([
-      api(`/admin/${endpoint}`, { signal }),
+      api(`/admin/${endpoint}${query}`, { signal }),
       needsGames ? api('/games', { signal }) : [],
     ]);
     if (!signal?.aborted) {
       setData(records);
       setGames(classifications);
     }
-  }, [api, tab]);
+  }, [api, tab, cardId]);
 
   useEffect(() => {
     if (tab === 'inventory') return;
@@ -37,29 +39,41 @@ export default function AdminPanel({ api, tab, label, busy, setBusy }) {
     return () => request.abort();
   }, [load, tab]);
 
-  async function run(task) {
+  async function perform(task) {
     if (lock.current) return;
     lock.current = true;
     setBusy(true);
     setFeedback(null);
-    let saved = false;
     try {
-      if (task) {
-        await task();
-        saved = true;
-      }
-      await load();
-      setFeedback({ text: saved ? '저장 완료' : '새로고침 완료' });
-    } catch (error) {
-      const retry = saved || !task;
-      if (retry) setData(null);
-      const text = saved ? `저장은 완료됐지만 목록을 불러오지 못했습니다. ${error.message}`
-        : retry ? `관리 정보를 불러오지 못했습니다. ${error.message}` : error.message;
-      setFeedback({ error: true, retry, text });
+      await task();
     } finally {
       lock.current = false;
       setBusy(false);
     }
+  }
+
+  function run(task, onConflict) {
+    return perform(async () => {
+      let saved = false;
+      try {
+        if (task) {
+          await task();
+          saved = true;
+        }
+        await load();
+        setFeedback({ text: saved ? '저장 완료' : '새로고침 완료' });
+      } catch (error) {
+        if (!saved && onConflict && error.status === 409) {
+          await onConflict();
+          return;
+        }
+        const retry = saved || !task;
+        if (retry && (!stock || saved)) setData(null);
+        const text = saved ? `저장은 완료됐지만 목록을 불러오지 못했습니다. ${error.message}`
+          : retry ? `관리 정보를 불러오지 못했습니다. ${error.message}` : error.message;
+        setFeedback({ error: true, retry, text });
+      }
+    });
   }
 
   useEffect(() => { if (editorSession) editorForm.current?.focus(); }, [editorSession]);
@@ -72,7 +86,14 @@ export default function AdminPanel({ api, tab, label, busy, setBusy }) {
 
   function openStock(product) {
     setEditor(null);
-    setStock({ ...product, delta: '', reason: '' });
+    setStock(product);
+  }
+
+  function saveStock(id, adjustment, onConflict) {
+    return run(async () => {
+      await api(`/admin/products/${encodeURIComponent(id)}/stock`, { method: 'POST', body: adjustment });
+      setStock(null);
+    }, onConflict);
   }
   function field(label, key, type = 'text', required = true) { return <label>{label}<input type={type} name={key} aria-label={key === 'purchaseLimit' ? '계정당 구매 한도' : undefined} required={required} min={type === 'number' ? 0 : undefined} max={key === 'purchaseLimit' ? 1000000 : undefined} step={type === 'number' ? 1 : undefined} value={editor[key] ?? ''} disabled={key === 'id' && editor.edit} maxLength={key === 'id' ? 40 : key === 'image' ? 1000 : 200} onChange={e => setEditor({ ...editor, [key]: type === 'number' ? Number(e.target.value) : e.target.value })} /></label>; }
   function saveProduct(e) { e.preventDefault(); run(async () => {
@@ -101,8 +122,9 @@ export default function AdminPanel({ api, tab, label, busy, setBusy }) {
         <label className="checkbox"><input type="checkbox" checked={editor.active} onChange={e => setEditor({ ...editor, active: e.target.checked })} />판매 공개</label>
         <div className="form-actions"><button type="submit" disabled={busy}>저장</button><button type="button" onClick={() => setEditor(null)}>닫기</button></div>
       </form><PricingReference key={editorSession} api={api} product={editor} disabled={busy} onApply={price => setEditor(current => current ? { ...current, price } : current)} /></>}
-      {stock && <form className="admin-form" onSubmit={e => { e.preventDefault(); run(async () => { await api(`/admin/products/${stock.id}/stock`, { method: 'POST', body: { delta: Number(stock.delta), expectedStock: stock.stock, reason: stock.reason } }); setStock(null); }); }}><h3>{stock.name} · 현재 {stock.stock}장</h3><label>증감 수량 (+입고 / −차감)<input type="number" required value={stock.delta} onChange={e => setStock({ ...stock, delta: e.target.value })} /></label><label>사유<input required maxLength={300} value={stock.reason} onChange={e => setStock({ ...stock, reason: e.target.value })} /></label><div className="form-actions"><button disabled={busy}>재고 반영</button><button type="button" onClick={() => setStock(null)}>닫기</button></div></form>}
-      <div className="admin-table-scroll"><table><thead><tr><th>코드 / 상품</th><th>가격</th><th>재고</th><th>구매 한도</th><th>상태</th><th>관리</th></tr></thead><tbody>{data.map(p => <tr key={p.id}><td>{p.id}<br />{p.name}</td><td>{p.price.toLocaleString()}원</td><td>{p.stock}장</td><td>{p.purchaseLimit > 0 ? `계정당 누적 ${p.purchaseLimit.toLocaleString()}장` : "무제한"}</td><td>{p.sample ? '보관된 예시' : p.active ? '판매 중' : '비공개'}</td><td><button disabled={busy} onClick={() => openEditor({ ...p, stock: p.sample ? '' : p.stock, edit: true })}>수정</button>{!p.sample && <button disabled={busy} onClick={() => openStock(p)}>입출고</button>}</td></tr>)}</tbody></table>{!data.length && <p>등록된 상품이 없습니다.</p>}</div>
+      <ProductInventory products={data} games={games} busy={busy} selected={stock} onSelect={openStock}
+        onEdit={product => openEditor({ ...product, stock: product.sample ? '' : product.stock, edit: true })}
+        closeStock={() => setStock(null)} saveStock={saveStock} reload={load} perform={perform} />
     </>}
     {tab === 'orders' && data && <div>{data.map(order => (
       <article className="order-item" key={order.id}>
@@ -118,7 +140,25 @@ export default function AdminPanel({ api, tab, label, busy, setBusy }) {
     {tab === 'events' && data && <><button className="solid" disabled={busy} onClick={() => setEvent({ game: games[0] || '', title: '', startsAt: '', description: '', active: true })}>일정 등록</button>
       {event && <form className="admin-form" onSubmit={e => { e.preventDefault(); run(async () => { const { id, ...body } = event; await api(id ? `/admin/events/${id}` : '/admin/events', { method: id ? 'PUT' : 'POST', body }); setEvent(null); }); }}><label>게임<select required value={event.game} onChange={e => setEvent({ ...event, game: e.target.value })}>{games.map(g => <option key={g}>{g}</option>)}</select></label><label>제목<input required maxLength={200} value={event.title} onChange={e => setEvent({ ...event, title: e.target.value })} /></label><label>일시 (한국 시간)<input type="datetime-local" required value={event.startsAt} onChange={e => setEvent({ ...event, startsAt: e.target.value })} /></label><label>안내<input maxLength={1000} value={event.description} onChange={e => setEvent({ ...event, description: e.target.value })} /></label><label className="checkbox"><input type="checkbox" checked={event.active} onChange={e => setEvent({ ...event, active: e.target.checked })} />공개</label><div className="form-actions"><button disabled={busy}>저장</button><button type="button" onClick={() => setEvent(null)}>닫기</button></div></form>}
       {data.map(e => <article className="order-item" key={e.ID}><strong>{e.TITLE} · {e.IS_SAMPLE ? '보관된 예시' : e.ACTIVE ? '공개' : '비공개'}</strong><p>{e.STARTS_AT}</p><button className="admin-control" type="button" disabled={busy} onClick={() => setEvent({ id: e.ID, game: e.GAME, title: e.TITLE, startsAt: String(e.STARTS_AT).replace(' ', 'T').slice(0, 16), description: e.DESCRIPTION, active: e.ACTIVE })}>수정</button></article>)}{!data.length && <p>등록된 일정이 없습니다.</p>}</>}
-    {tab === 'movements' && data && <div className="admin-table-scroll"><table><thead><tr><th>상품</th><th>증감</th><th>잔고</th><th>사유</th><th>일시</th></tr></thead><tbody>{data.map((m, i) => <tr key={i}><td>{m.CARD_ID}</td><td>{m.DELTA}</td><td>{m.BALANCE}</td><td>{m.REASON}<br />{m.ORDER_ID}</td><td>{new Date(m.CREATED * 1000).toLocaleString('ko-KR')}</td></tr>)}</tbody></table>{!data.length && <p>입출고 이력이 없습니다.</p>}</div>}
+    {tab === 'movements' && <>
+      {cardId && <div className="admin-movement-context">
+        <p>상품 코드 <strong>{cardId}</strong></p>
+        <a className="admin-control" href="/admin.html?section=movements">전체 재고 이력</a>
+      </div>}
+      {data && <div className="admin-table-scroll" role="region" tabIndex={0} aria-label="재고 이력 목록">
+        <table>
+          <thead><tr><th scope="col">상품</th><th scope="col">증감</th><th scope="col">잔고</th><th scope="col">사유</th><th scope="col">일시</th></tr></thead>
+          <tbody>{data.map((movement, index) => <tr key={index}>
+            <td>{movement.CARD_ID}</td>
+            <td>{movement.DELTA > 0 ? '+' : ''}{Number(movement.DELTA).toLocaleString('ko-KR')}</td>
+            <td>{Number(movement.BALANCE).toLocaleString('ko-KR')}</td>
+            <td>{movement.REASON}{movement.ORDER_ID && <><br />{movement.ORDER_ID}</>}</td>
+            <td>{new Date(movement.CREATED * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })}</td>
+          </tr>)}</tbody>
+        </table>
+        {!data.length && <p>{cardId ? '이 상품의 입출고 이력이 없습니다.' : '입출고 이력이 없습니다.'}</p>}
+      </div>}
+    </>}
     {tab === 'database' && data && <div className="admin-table-scroll"><p>운영 상품 {data.products}개 · 보관된 예시 {data.sampleProducts}개</p><table><thead><tr><th>DB 테이블</th><th>저장 건수</th></tr></thead><tbody>{Object.entries(data.tables).map(([name, n]) => <tr key={name}><td>{name}</td><td>{n}</td></tr>)}</tbody></table></div>}
     {tab === 'inventory' && <InventoryDevices api={api} />}
   </section>;

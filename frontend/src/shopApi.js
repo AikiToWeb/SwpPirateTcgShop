@@ -12,7 +12,9 @@ export async function shopApi(path, options = {}, csrfToken) {
   });
   const value = await response.json().catch(() => ({}));
   if (!response.ok) {
-    throw new Error(typeof value.detail === 'string' ? value.detail : `요청 실패 (${response.status})`);
+    const error = new Error(typeof value.detail === 'string' ? value.detail : `요청 실패 (${response.status})`);
+    error.status = response.status;
+    throw error;
   }
   return value;
 }
