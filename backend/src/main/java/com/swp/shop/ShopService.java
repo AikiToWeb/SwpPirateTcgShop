@@ -17,6 +17,8 @@ import org.springframework.web.server.ResponseStatusException;
 
 @Service
 public class ShopService {
+    private static final String PUBLISHED_CARD =
+        "c.active=TRUE AND c.is_sample=FALSE AND (c.publish_at IS NULL OR c.publish_at<=?)";
     final JdbcTemplate jdbc;
     final TransactionTemplate tx;
     final String origin;
@@ -48,11 +50,37 @@ public class ShopService {
     Map<String,Object> cardMap(Map<String,Object> r){
         return Map.ofEntries(Map.entry("id",r.get("ID")),Map.entry("name",r.get("NAME")),Map.entry("en",r.get("EN")),Map.entry("set",r.get("SET_NAME")),Map.entry("price",r.get("PRICE")),Map.entry("stock",r.get("STOCK")),Map.entry("image",r.get("IMAGE")),Map.entry("game",r.get("GAME")),Map.entry("condition",r.get("CARD_CONDITION")),Map.entry("language",r.get("LANGUAGE")),Map.entry("active",r.get("ACTIVE")),Map.entry("sample",r.get("IS_SAMPLE")),Map.entry("purchaseLimit",r.get("PURCHASE_LIMIT")));
     }
-    public List<Map<String,Object>> cards(){return jdbc.queryForList("SELECT * FROM cards WHERE active=TRUE AND is_sample=FALSE ORDER BY created DESC,id").stream().map(this::cardMap).toList();}
+    public List<Map<String,Object>> cards() {
+        return jdbc.queryForList("SELECT c.* FROM cards c WHERE " + PUBLISHED_CARD + " ORDER BY c.created DESC,c.id", now())
+            .stream().map(this::cardMap).toList();
+    }
     public List<Map<String,Object>> events(){return jdbc.queryForList("SELECT * FROM shop_events WHERE active=TRUE AND is_sample=FALSE ORDER BY starts_at,id").stream().map(r->Map.<String,Object>of("id",r.get("ID"),"game",r.get("GAME"),"title",r.get("TITLE"),"startsAt",r.get("STARTS_AT").toString().replace(" ","T")+"+09:00","description",r.get("DESCRIPTION"),"sample",r.get("IS_SAMPLE"))).toList();}
-    public List<String> binder(String user){return jdbc.queryForList("SELECT b.card_id FROM binders b JOIN cards c ON c.id=b.card_id WHERE b.user_id=? AND c.active=TRUE AND c.is_sample=FALSE ORDER BY b.card_id",String.class,user);}
-    public void save(String user,String id,boolean saved){tx.executeWithoutResult(status->{lockUser(user);if(jdbc.queryForObject("SELECT COUNT(*) FROM cards WHERE id=? AND active=TRUE AND is_sample=FALSE",Integer.class,id)==0)throw error(404,"상품이 없습니다.");if(saved)jdbc.update("INSERT INTO binders(user_id,card_id) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM binders WHERE user_id=? AND card_id=?)",user,id,user,id);else jdbc.update("DELETE FROM binders WHERE user_id=? AND card_id=?",user,id);});}
-    public List<Map<String,Object>> cart(String user){return jdbc.queryForList("SELECT t.card_id,t.quantity FROM carts t JOIN cards c ON c.id=t.card_id WHERE t.user_id=? AND c.active=TRUE AND c.is_sample=FALSE ORDER BY t.card_id",user).stream().map(r->Map.<String,Object>of("id",r.get("CARD_ID"),"quantity",r.get("QUANTITY"))).toList();}
+    public List<String> binder(String user) {
+        return jdbc.queryForList(
+            "SELECT b.card_id FROM binders b JOIN cards c ON c.id=b.card_id WHERE b.user_id=? AND " + PUBLISHED_CARD + " ORDER BY b.card_id",
+            String.class, user, now());
+    }
+    public void save(String user, String id, boolean saved) {
+        tx.executeWithoutResult(status -> {
+            lockUser(user);
+            if (lockPublishedCard(id, now()) == null) throw error(404, "상품이 없습니다.");
+            if (saved) {
+                jdbc.update("INSERT INTO binders(user_id,card_id) SELECT ?,? WHERE NOT EXISTS(SELECT 1 FROM binders WHERE user_id=? AND card_id=?)",
+                    user, id, user, id);
+            } else {
+                jdbc.update("DELETE FROM binders WHERE user_id=? AND card_id=?", user, id);
+            }
+        });
+    }
+    public List<Map<String,Object>> cart(String user) {
+        return jdbc.queryForList(
+            "SELECT t.card_id,t.quantity FROM carts t JOIN cards c ON c.id=t.card_id WHERE t.user_id=? AND " + PUBLISHED_CARD + " ORDER BY t.card_id",
+            user, now()).stream().map(row -> Map.<String,Object>of("id", row.get("CARD_ID"), "quantity", row.get("QUANTITY"))).toList();
+    }
+    private Map<String,Object> lockPublishedCard(String id, long now) {
+        var rows = jdbc.queryForList("SELECT c.* FROM cards c WHERE c.id=? AND " + PUBLISHED_CARD + " FOR UPDATE", id, now);
+        return rows.isEmpty() ? null : rows.getFirst();
+    }
     private void lockUser(String user){jdbc.queryForObject("SELECT id FROM shop_users WHERE id=? FOR UPDATE",String.class,user);}
     private List<Item> validate(List<Item> items){
         if(items==null||items.size()>100||items.stream().map(Item::id).distinct().count()!=items.size())throw error(422,"중복 상품 또는 잘못된 장바구니입니다.");
@@ -63,7 +91,26 @@ public class ShopService {
         long bought=jdbc.queryForObject("SELECT COALESCE(SUM(CAST(i.quantity AS BIGINT)),0) FROM order_items i JOIN shop_orders o ON o.id=i.order_id WHERE o.user_id=? AND i.card_id=? AND o.is_sample=FALSE AND o.status IN ('접수','수령완료')",Long.class,user,product.get("ID"));
         if(bought+requested>limit)throw error(409,product.get("NAME")+" 상품은 계정당 누적 "+limit+"개까지 구매할 수 있습니다. 현재 추가 구매 가능 수량 "+Math.max(0,limit-bought)+"개입니다.");
     }
-    public void saveCart(String user,List<Item> items){tx.executeWithoutResult(status->{lockUser(user);var previous=new HashMap<String,Integer>();for(var row:jdbc.queryForList("SELECT card_id,quantity FROM carts WHERE user_id=?",user))previous.put(row.get("CARD_ID").toString(),((Number)row.get("QUANTITY")).intValue());for(var i:validate(items)){if(i.quantity()<=previous.getOrDefault(i.id(),0))continue;var r=jdbc.queryForList("SELECT * FROM cards WHERE id=? AND active=TRUE AND is_sample=FALSE FOR UPDATE",i.id());if(r.isEmpty()||((Number)r.getFirst().get("STOCK")).intValue()<i.quantity())throw error(409,"재고가 변경되었습니다. 상품 목록을 갱신하세요.");enforcePurchaseLimit(user,r.getFirst(),i.quantity());}jdbc.update("DELETE FROM carts WHERE user_id=?",user);for(var i:items)jdbc.update("INSERT INTO carts VALUES(?,?,?)",user,i.id(),i.quantity());});}
+    public void saveCart(String user, List<Item> items) {
+        tx.executeWithoutResult(status -> {
+            lockUser(user);
+            var previous = new HashMap<String,Integer>();
+            for (var row : jdbc.queryForList("SELECT card_id,quantity FROM carts WHERE user_id=?", user)) {
+                previous.put(row.get("CARD_ID").toString(), ((Number) row.get("QUANTITY")).intValue());
+            }
+            long now = now();
+            for (var item : validate(items)) {
+                if (item.quantity() <= previous.getOrDefault(item.id(), 0)) continue;
+                var card = lockPublishedCard(item.id(), now);
+                if (card == null || ((Number) card.get("STOCK")).intValue() < item.quantity()) {
+                    throw error(409,"재고가 변경되었습니다. 상품 목록을 갱신하세요.");
+                }
+                enforcePurchaseLimit(user, card, item.quantity());
+            }
+            jdbc.update("DELETE FROM carts WHERE user_id=?", user);
+            for (var item : items) jdbc.update("INSERT INTO carts VALUES(?,?,?)", user, item.id(), item.quantity());
+        });
+    }
     Map<String,Object> orderMap(Map<String,Object> r){
         var items=jdbc.queryForList("SELECT card_id,name,price,quantity FROM order_items WHERE order_id=? ORDER BY card_id",r.get("ID")).stream().map(i->Map.<String,Object>of("card_id",i.get("CARD_ID"),"name",i.get("NAME"),"price",i.get("PRICE"),"quantity",i.get("QUANTITY"))).toList();
         return Map.of("id",r.get("ID"),"sample",r.get("IS_SAMPLE"),"status",r.get("STATUS"),"total",r.get("TOTAL"),"created",r.get("CREATED"),"items",items);
@@ -76,7 +123,16 @@ public class ShopService {
         var items=validate(body.items());
         long total=0;
         var cards=new HashMap<String,Map<String,Object>>();
-        for(var i:items){var r=jdbc.queryForList("SELECT * FROM cards WHERE id=? AND active=TRUE AND is_sample=FALSE FOR UPDATE",i.id());if(r.isEmpty()||((Number)r.getFirst().get("STOCK")).intValue()<i.quantity())throw error(409,"재고가 부족합니다. 상품 목록을 갱신하세요.");enforcePurchaseLimit(user,r.getFirst(),i.quantity());cards.put(i.id(),r.getFirst());total+=((Number)r.getFirst().get("PRICE")).longValue()*i.quantity();}
+        long now = now();
+        for (var item : items) {
+            var card = lockPublishedCard(item.id(), now);
+            if (card == null || ((Number) card.get("STOCK")).intValue() < item.quantity()) {
+                throw error(409, "재고가 부족합니다. 상품 목록을 갱신하세요.");
+            }
+            enforcePurchaseLimit(user, card, item.quantity());
+            cards.put(item.id(), card);
+            total += ((Number) card.get("PRICE")).longValue() * item.quantity();
+        }
         String id="SWP-"+UUID.randomUUID().toString().replace("-","").substring(0,12).toUpperCase(Locale.ROOT);
         jdbc.update("INSERT INTO shop_orders(id,user_id,request_key,status,total,created) VALUES(?,?,?,?,?,?)",id,user,body.request_key(),"접수",total,now());
         for(var i:items){var p=cards.get(i.id());jdbc.update("UPDATE cards SET stock=stock-? WHERE id=?",i.quantity(),i.id());movement(i.id(),user,-i.quantity(),((Number)p.get("STOCK")).intValue()-i.quantity(),"주문 예약",id);jdbc.update("INSERT INTO order_items VALUES(?,?,?,?,?)",id,i.id(),p.get("NAME"),p.get("PRICE"),i.quantity());}

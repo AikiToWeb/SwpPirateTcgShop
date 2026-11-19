@@ -3,8 +3,9 @@ import PricingReference from './PricingReference.jsx';
 import InventoryDevices from './InventoryDevices.jsx';
 import CardImageSearch from './CardImageSearch.jsx';
 import ProductInventory from './ProductInventory.jsx';
+import { PublishTime } from './VisibilityControls.jsx';
 
-const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, purchaseLimit: 0, image: '', active: true };
+const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, purchaseLimit: 0, image: '', active: false };
 export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
   const [data, setData] = useState(null);
   const [games, setGames] = useState([]);
@@ -56,12 +57,14 @@ export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
     return perform(async () => {
       let saved = false;
       try {
+        let message = '새로고침 완료';
         if (task) {
-          await task();
+          const result = await task();
           saved = true;
+          message = typeof result === 'string' ? result : '저장 완료';
         }
         await load();
-        setFeedback({ text: saved ? '저장 완료' : '새로고침 완료' });
+        setFeedback({ text: message });
       } catch (error) {
         if (!saved && onConflict && error.status === 409) {
           await onConflict();
@@ -81,7 +84,7 @@ export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
   function openEditor(value) {
     setEditorSession(current => current + 1);
     setStock(null);
-    setEditor({ ...value, purchaseLimit: value.purchaseLimit ?? 0 });
+    setEditor({ ...value, initialActive: value.active, purchaseLimit: value.purchaseLimit ?? 0 });
   }
 
   function openStock(product) {
@@ -95,9 +98,19 @@ export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
       setStock(null);
     }, onConflict);
   }
+
+  function saveVisibility(body, onSaved) {
+    return run(async () => {
+      const result = await api('/admin/products/visibility', { method: 'POST', body });
+      onSaved();
+      return `상품 ${result.updated.toLocaleString('ko-KR')}개의 공개 상태를 변경했습니다.`;
+    });
+  }
+
   function field(label, key, type = 'text', required = true) { return <label>{label}<input type={type} name={key} aria-label={key === 'purchaseLimit' ? '계정당 구매 한도' : undefined} required={required} min={type === 'number' ? 0 : undefined} max={key === 'purchaseLimit' ? 1000000 : undefined} step={type === 'number' ? 1 : undefined} value={editor[key] ?? ''} disabled={key === 'id' && editor.edit} maxLength={key === 'id' ? 40 : key === 'image' ? 1000 : 200} onChange={e => setEditor({ ...editor, [key]: type === 'number' ? Number(e.target.value) : e.target.value })} /></label>; }
   function saveProduct(e) { e.preventDefault(); run(async () => {
-    const { edit, stock: initialStock, sample, ...product } = editor;
+    const { edit, stock: initialStock, sample, publishAt, initialActive, ...product } = editor;
+    if (edit && (publishAt || product.active === initialActive)) delete product.active;
     product.purchaseLimit = Number(editor.purchaseLimit ?? 0);
     if (!Number.isSafeInteger(product.purchaseLimit) || product.purchaseLimit < 0 || product.purchaseLimit > 1000000) throw new Error('구매 한도는 0~1,000,000의 정수로 입력하세요.');
     if (sample) product.confirmedStock = Number(initialStock);
@@ -119,12 +132,15 @@ export default function AdminPanel({ api, tab, label, busy, setBusy, cardId }) {
         <label>게임<select value={editor.game} onChange={e => setEditor({ ...editor, game: e.target.value })}>{games.map(g => <option key={g}>{g}</option>)}</select></label>
         <label>컨디션<select value={editor.condition} onChange={e => setEditor({ ...editor, condition: e.target.value })}>{['NM', 'EX', 'VG', 'G'].map(g => <option key={g}>{g}</option>)}</select></label>{field('언어', 'language')}{field('판매가 (원)', 'price', 'number')}{field('계정당 구매 한도 (0=무제한)', 'purchaseLimit', 'number')}<p className="purchase-limit-note">SWP 계정당 누적 구매 수량입니다. 0은 무제한이며 취소 주문은 제외하고 수령 완료 주문은 포함합니다. 네이버 계정의 구매 수량은 합산하지 않습니다.</p>{(!editor.edit || editor.sample) && field('실물 확인 재고', 'stock', 'number')}{field('이미지 HTTPS 주소 또는 파일명', 'image', 'text', false)}
         <CardImageSearch key={editorSession} api={api} product={editor} disabled={busy} onApplyImage={(image, identity) => setEditor(current => current && identity && ['id', 'name', 'game', 'language'].every(key => (current[key] || '') === identity[key]) ? { ...current, image } : current)} />
-        <label className="checkbox"><input type="checkbox" checked={editor.active} onChange={e => setEditor({ ...editor, active: e.target.checked })} />판매 공개</label>
+        {editor.publishAt
+          ? <p className="admin-schedule-note">공개 예약: <PublishTime value={editor.publishAt} />. 예약 변경은 상품 목록의 공개 설정에서 진행하세요.</p>
+          : <label className="checkbox"><input type="checkbox" checked={editor.active} onChange={e => setEditor({ ...editor, active: e.target.checked })} />판매 공개</label>}
         <div className="form-actions"><button type="submit" disabled={busy}>저장</button><button type="button" onClick={() => setEditor(null)}>닫기</button></div>
       </form><PricingReference key={editorSession} api={api} product={editor} disabled={busy} onApply={price => setEditor(current => current ? { ...current, price } : current)} /></>}
       <ProductInventory products={data} games={games} busy={busy} selected={stock} onSelect={openStock}
         onEdit={product => openEditor({ ...product, stock: product.sample ? '' : product.stock, edit: true })}
-        closeStock={() => setStock(null)} saveStock={saveStock} reload={load} perform={perform} />
+        closeStock={() => setStock(null)} saveStock={saveStock} reload={load} perform={perform}
+        editing={Boolean(editor)} saveVisibility={saveVisibility} />
     </>}
     {tab === 'orders' && data && <div>{data.map(order => (
       <article className="order-item" key={order.id}>
