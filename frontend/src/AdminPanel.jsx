@@ -1,27 +1,79 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import PricingReference from './PricingReference.jsx';
 import InventoryDevices from './InventoryDevices.jsx';
 import CardImageSearch from './CardImageSearch.jsx';
 
 const blank = { id: '', name: '', en: '', set: '', game: '', condition: 'NM', language: '한국어', price: 0, stock: 0, purchaseLimit: 0, image: '', active: true };
-export default function AdminPanel({ api, games, changed }) {
-  const [tab, setTab] = useState('products'), [products, setProducts] = useState([]), [orders, setOrders] = useState([]), [events, setEvents] = useState([]), [movements, setMovements] = useState([]), [summary, setSummary] = useState(null);
-  const [editor, setEditor] = useState(null), [stock, setStock] = useState(null), [event, setEvent] = useState(null), [busy, setBusy] = useState(false), [message, setMessage] = useState('');
+export default function AdminPanel({ api, tab, label, busy, setBusy }) {
+  const [data, setData] = useState(null);
+  const [games, setGames] = useState([]);
+  const [editor, setEditor] = useState(null), [stock, setStock] = useState(null), [event, setEvent] = useState(null);
+  const [feedback, setFeedback] = useState(null);
   const [editorSession, setEditorSession] = useState(0);
-  const [loading, setLoading] = useState(true), [loadError, setLoadError] = useState('');
-  const [inventoryRefresh, setInventoryRefresh] = useState(0);
   const lock = useRef(false);
-  function openEditor(value) { setEditorSession(current => current + 1); setEditor({ ...value, purchaseLimit: value.purchaseLimit ?? 0 }); }
-  async function load() {
-    setLoading(true); setLoadError('');
+  const editorForm = useRef(null);
+
+  const load = useCallback(async signal => {
+    const endpoint = tab === 'database' ? 'summary' : tab;
+    const needsGames = tab === 'products' || tab === 'events';
+    const [records, classifications] = await Promise.all([
+      api(`/admin/${endpoint}`, { signal }),
+      needsGames ? api('/games', { signal }) : [],
+    ]);
+    if (!signal?.aborted) {
+      setData(records);
+      setGames(classifications);
+    }
+  }, [api, tab]);
+
+  useEffect(() => {
+    if (tab === 'inventory') return;
+    const request = new AbortController();
+    load(request.signal).catch(error => {
+      if (!request.signal.aborted) {
+        setFeedback({ error: true, retry: true, text: `관리 정보를 불러오지 못했습니다. ${error.message}` });
+      }
+    });
+    return () => request.abort();
+  }, [load, tab]);
+
+  async function run(task) {
+    if (lock.current) return;
+    lock.current = true;
+    setBusy(true);
+    setFeedback(null);
+    let saved = false;
     try {
-      const [p, o, e, m, s] = await Promise.all([api('/admin/products'), api('/admin/orders'), api('/admin/events'), api('/admin/movements'), api('/admin/summary')]);
-      setProducts(p); setOrders(o); setEvents(e); setMovements(m); setSummary(s);
-    } catch (failure) { setLoadError(failure.message); throw failure; }
-    finally { setLoading(false); }
+      if (task) {
+        await task();
+        saved = true;
+      }
+      await load();
+      setFeedback({ text: saved ? '저장 완료' : '새로고침 완료' });
+    } catch (error) {
+      const retry = saved || !task;
+      if (retry) setData(null);
+      const text = saved ? `저장은 완료됐지만 목록을 불러오지 못했습니다. ${error.message}`
+        : retry ? `관리 정보를 불러오지 못했습니다. ${error.message}` : error.message;
+      setFeedback({ error: true, retry, text });
+    } finally {
+      lock.current = false;
+      setBusy(false);
+    }
   }
-  async function run(task) { if (lock.current) return; lock.current = true; setBusy(true); setMessage(''); try { await task(); await load(); await changed(); setMessage('저장 완료'); } catch (e) { setMessage(e.message); } finally { lock.current = false; setBusy(false); } }
-  useEffect(() => { load().catch(e => setMessage(e.message)); }, []);
+
+  useEffect(() => { if (editorSession) editorForm.current?.focus(); }, [editorSession]);
+
+  function openEditor(value) {
+    setEditorSession(current => current + 1);
+    setStock(null);
+    setEditor({ ...value, purchaseLimit: value.purchaseLimit ?? 0 });
+  }
+
+  function openStock(product) {
+    setEditor(null);
+    setStock({ ...product, delta: '', reason: '' });
+  }
   function field(label, key, type = 'text', required = true) { return <label>{label}<input type={type} name={key} aria-label={key === 'purchaseLimit' ? '계정당 구매 한도' : undefined} required={required} min={type === 'number' ? 0 : undefined} max={key === 'purchaseLimit' ? 1000000 : undefined} step={type === 'number' ? 1 : undefined} value={editor[key] ?? ''} disabled={key === 'id' && editor.edit} maxLength={key === 'id' ? 40 : key === 'image' ? 1000 : 200} onChange={e => setEditor({ ...editor, [key]: type === 'number' ? Number(e.target.value) : e.target.value })} /></label>; }
   function saveProduct(e) { e.preventDefault(); run(async () => {
     const { edit, stock: initialStock, sample, ...product } = editor;
@@ -32,13 +84,16 @@ export default function AdminPanel({ api, games, changed }) {
     else await api('/admin/products', { method: 'POST', body: { product, stock: Number(initialStock) } });
     setEditor(null);
   }); }
-  return <div className="admin-panel"><h2>상점 관리</h2><div className="admin-tabs">{[['products', '상품'], ['orders', '주문'], ['events', '일정'], ['movements', '재고 이력'], ['database', 'DB 테이블'], ['inventory', '재고관리 앱']].map(([id, label]) => <button key={id} disabled={busy} aria-pressed={tab === id} onClick={() => { setTab(id); setEditor(null); setStock(null); setEvent(null); }}>{label}</button>)}<button disabled={busy} onClick={() => tab === 'inventory' ? setInventoryRefresh(value => value + 1) : run(async () => {})}>새로고침</button></div>
-    <p role="status" className="admin-message">{message}</p>
-    {loading && <p role="status">관리 정보 불러오는 중</p>}
-    {loadError && <p role="alert">관리 정보를 불러오지 못했습니다. {loadError} <button disabled={busy || loading} onClick={() => load().catch(() => {})}>다시 불러오기</button></p>}
-    {tab === 'products' && !loading && !loadError && <>
+  return <section className="admin-panel" aria-labelledby="admin-section-title">
+    <div className="admin-section-heading">
+      <h2 id="admin-section-title">{label}</h2>
+      {tab !== 'inventory' && <button className="admin-control" type="button" disabled={busy || (!data && !feedback)} onClick={() => run()}>{feedback?.retry ? '다시 불러오기' : '새로고침'}</button>}
+    </div>
+    {feedback && <p role={feedback.error ? 'alert' : 'status'} className={feedback.error ? 'admin-message' : 'admin-success'}>{feedback.text}</p>}
+    {tab !== 'inventory' && !data && !feedback && <p role="status">불러오는 중…</p>}
+    {tab === 'products' && data && <>
       <button className="solid" disabled={busy} onClick={() => openEditor({ ...blank, game: games[0] || '' })}>상품 등록</button>
-      {editor && <><form className="admin-form" onSubmit={saveProduct}><h3>{editor.edit ? '상품 수정' : '상품 등록'}</h3>{editor.sample && <p>이전 예시 상품입니다. 실제 판매 정보로 확인해 저장하면 일반 상품으로 전환됩니다.</p>}
+      {editor && <><form className="admin-form" ref={editorForm} tabIndex={-1} onSubmit={saveProduct}><h3>{editor.edit ? '상품 수정' : '상품 등록'}</h3>{editor.sample && <p>이전 예시 상품입니다. 실제 판매 정보로 확인해 저장하면 일반 상품으로 전환됩니다.</p>}
         {field('상품 코드', 'id')}{field('상품명', 'name')}{field('영문명', 'en', 'text', false)}{field('세트명', 'set')}
         <label>게임<select value={editor.game} onChange={e => setEditor({ ...editor, game: e.target.value })}>{games.map(g => <option key={g}>{g}</option>)}</select></label>
         <label>컨디션<select value={editor.condition} onChange={e => setEditor({ ...editor, condition: e.target.value })}>{['NM', 'EX', 'VG', 'G'].map(g => <option key={g}>{g}</option>)}</select></label>{field('언어', 'language')}{field('판매가 (원)', 'price', 'number')}{field('계정당 구매 한도 (0=무제한)', 'purchaseLimit', 'number')}<p className="purchase-limit-note">SWP 계정당 누적 구매 수량입니다. 0은 무제한이며 취소 주문은 제외하고 수령 완료 주문은 포함합니다. 네이버 계정의 구매 수량은 합산하지 않습니다.</p>{(!editor.edit || editor.sample) && field('실물 확인 재고', 'stock', 'number')}{field('이미지 HTTPS 주소 또는 파일명', 'image', 'text', false)}
@@ -47,14 +102,24 @@ export default function AdminPanel({ api, games, changed }) {
         <div className="form-actions"><button type="submit" disabled={busy}>저장</button><button type="button" onClick={() => setEditor(null)}>닫기</button></div>
       </form><PricingReference key={editorSession} api={api} product={editor} disabled={busy} onApply={price => setEditor(current => current ? { ...current, price } : current)} /></>}
       {stock && <form className="admin-form" onSubmit={e => { e.preventDefault(); run(async () => { await api(`/admin/products/${stock.id}/stock`, { method: 'POST', body: { delta: Number(stock.delta), expectedStock: stock.stock, reason: stock.reason } }); setStock(null); }); }}><h3>{stock.name} · 현재 {stock.stock}장</h3><label>증감 수량 (+입고 / −차감)<input type="number" required value={stock.delta} onChange={e => setStock({ ...stock, delta: e.target.value })} /></label><label>사유<input required maxLength={300} value={stock.reason} onChange={e => setStock({ ...stock, reason: e.target.value })} /></label><div className="form-actions"><button disabled={busy}>재고 반영</button><button type="button" onClick={() => setStock(null)}>닫기</button></div></form>}
-      <div className="admin-table-scroll"><table><thead><tr><th>코드 / 상품</th><th>가격</th><th>재고</th><th>구매 한도</th><th>상태</th><th>관리</th></tr></thead><tbody>{products.map(p => <tr key={p.id}><td>{p.id}<br />{p.name}</td><td>{p.price.toLocaleString()}원</td><td>{p.stock}장</td><td>{p.purchaseLimit > 0 ? `계정당 누적 ${p.purchaseLimit.toLocaleString()}장` : "무제한"}</td><td>{p.sample ? '보관된 예시' : p.active ? '판매 중' : '비공개'}</td><td><button disabled={busy} onClick={() => openEditor({ ...p, stock: p.sample ? '' : p.stock, edit: true })}>수정</button>{!p.sample && <button disabled={busy} onClick={() => setStock({ ...p, delta: '', reason: '' })}>입출고</button>}</td></tr>)}</tbody></table>{!products.length && <p>등록된 상품이 없습니다.</p>}</div>
+      <div className="admin-table-scroll"><table><thead><tr><th>코드 / 상품</th><th>가격</th><th>재고</th><th>구매 한도</th><th>상태</th><th>관리</th></tr></thead><tbody>{data.map(p => <tr key={p.id}><td>{p.id}<br />{p.name}</td><td>{p.price.toLocaleString()}원</td><td>{p.stock}장</td><td>{p.purchaseLimit > 0 ? `계정당 누적 ${p.purchaseLimit.toLocaleString()}장` : "무제한"}</td><td>{p.sample ? '보관된 예시' : p.active ? '판매 중' : '비공개'}</td><td><button disabled={busy} onClick={() => openEditor({ ...p, stock: p.sample ? '' : p.stock, edit: true })}>수정</button>{!p.sample && <button disabled={busy} onClick={() => openStock(p)}>입출고</button>}</td></tr>)}</tbody></table>{!data.length && <p>등록된 상품이 없습니다.</p>}</div>
     </>}
-    {tab === 'orders' && !loading && !loadError && <div>{orders.map(o => <article className="order-item" key={o.id}><h3>{o.id} {o.sample && '· 이전 예시 주문'}</h3><p>주문자: {o.nickname || '닉네임 없음'} · 회원번호 {o.userId ?? '확인 불가'}</p><p>{new Date(o.created * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · {o.status} · {o.total.toLocaleString()}원</p><p>{o.items.map(i => `${i.name} ${i.quantity}장`).join(', ')}</p>{o.status === '접수' && !o.sample && <button className="cancel-order" disabled={busy} onClick={() => run(() => api(`/admin/orders/${o.id}/complete`, { method: 'POST' }))}>수령 완료 처리</button>}</article>)}{!orders.length && <p>주문이 없습니다.</p>}</div>}
-    {tab === 'events' && !loading && !loadError && <><button className="solid" onClick={() => setEvent({ game: games[0] || '', title: '', startsAt: '', description: '', active: true })}>일정 등록</button>
+    {tab === 'orders' && data && <div>{data.map(order => (
+      <article className="order-item" key={order.id}>
+        <h3>{order.id} {order.sample && '· 이전 예시 주문'}</h3>
+        <p>주문자: {order.nickname || '닉네임 없음'} · 회원번호 {order.userId ?? '확인 불가'}</p>
+        <p>{new Date(order.created * 1000).toLocaleString('ko-KR', { timeZone: 'Asia/Seoul' })} · {order.status} · {order.total.toLocaleString()}원</p>
+        <p>{order.items.map(item => `${item.name} ${item.quantity}장`).join(', ')}</p>
+        {order.status === '접수' && !order.sample && (
+          <button className="cancel-order" disabled={busy} onClick={() => run(() => api(`/admin/orders/${order.id}/complete`, { method: 'POST' }))}>수령 완료 처리</button>
+        )}
+      </article>
+    ))}{!data.length && <p>주문이 없습니다.</p>}</div>}
+    {tab === 'events' && data && <><button className="solid" disabled={busy} onClick={() => setEvent({ game: games[0] || '', title: '', startsAt: '', description: '', active: true })}>일정 등록</button>
       {event && <form className="admin-form" onSubmit={e => { e.preventDefault(); run(async () => { const { id, ...body } = event; await api(id ? `/admin/events/${id}` : '/admin/events', { method: id ? 'PUT' : 'POST', body }); setEvent(null); }); }}><label>게임<select required value={event.game} onChange={e => setEvent({ ...event, game: e.target.value })}>{games.map(g => <option key={g}>{g}</option>)}</select></label><label>제목<input required maxLength={200} value={event.title} onChange={e => setEvent({ ...event, title: e.target.value })} /></label><label>일시 (한국 시간)<input type="datetime-local" required value={event.startsAt} onChange={e => setEvent({ ...event, startsAt: e.target.value })} /></label><label>안내<input maxLength={1000} value={event.description} onChange={e => setEvent({ ...event, description: e.target.value })} /></label><label className="checkbox"><input type="checkbox" checked={event.active} onChange={e => setEvent({ ...event, active: e.target.checked })} />공개</label><div className="form-actions"><button disabled={busy}>저장</button><button type="button" onClick={() => setEvent(null)}>닫기</button></div></form>}
-      {events.map(e => <article className="order-item" key={e.ID}><strong>{e.TITLE} · {e.IS_SAMPLE ? '보관된 예시' : e.ACTIVE ? '공개' : '비공개'}</strong><p>{e.STARTS_AT}</p><button onClick={() => setEvent({ id: e.ID, game: e.GAME, title: e.TITLE, startsAt: String(e.STARTS_AT).replace(' ', 'T').slice(0, 16), description: e.DESCRIPTION, active: e.ACTIVE })}>수정</button></article>)}</>}
-    {tab === 'movements' && !loading && !loadError && <div className="admin-table-scroll"><table><thead><tr><th>상품</th><th>증감</th><th>잔고</th><th>사유</th><th>일시</th></tr></thead><tbody>{movements.map((m, i) => <tr key={i}><td>{m.CARD_ID}</td><td>{m.DELTA}</td><td>{m.BALANCE}</td><td>{m.REASON}<br />{m.ORDER_ID}</td><td>{new Date(m.CREATED * 1000).toLocaleString('ko-KR')}</td></tr>)}</tbody></table>{!movements.length && <p>입출고 이력이 없습니다.</p>}</div>}
-    {tab === 'database' && !loading && !loadError && summary && <><p>운영 상품 {summary.products}개 · 보관된 예시 {summary.sampleProducts}개</p><table><thead><tr><th>DB 테이블</th><th>저장 건수</th></tr></thead><tbody>{Object.entries(summary.tables).map(([name, n]) => <tr key={name}><td>{name}</td><td>{n}</td></tr>)}</tbody></table></>}
-    {tab === 'inventory' && <InventoryDevices api={api} refreshKey={inventoryRefresh} />}
-  </div>;
+      {data.map(e => <article className="order-item" key={e.ID}><strong>{e.TITLE} · {e.IS_SAMPLE ? '보관된 예시' : e.ACTIVE ? '공개' : '비공개'}</strong><p>{e.STARTS_AT}</p><button className="admin-control" type="button" disabled={busy} onClick={() => setEvent({ id: e.ID, game: e.GAME, title: e.TITLE, startsAt: String(e.STARTS_AT).replace(' ', 'T').slice(0, 16), description: e.DESCRIPTION, active: e.ACTIVE })}>수정</button></article>)}{!data.length && <p>등록된 일정이 없습니다.</p>}</>}
+    {tab === 'movements' && data && <div className="admin-table-scroll"><table><thead><tr><th>상품</th><th>증감</th><th>잔고</th><th>사유</th><th>일시</th></tr></thead><tbody>{data.map((m, i) => <tr key={i}><td>{m.CARD_ID}</td><td>{m.DELTA}</td><td>{m.BALANCE}</td><td>{m.REASON}<br />{m.ORDER_ID}</td><td>{new Date(m.CREATED * 1000).toLocaleString('ko-KR')}</td></tr>)}</tbody></table>{!data.length && <p>입출고 이력이 없습니다.</p>}</div>}
+    {tab === 'database' && data && <div className="admin-table-scroll"><p>운영 상품 {data.products}개 · 보관된 예시 {data.sampleProducts}개</p><table><thead><tr><th>DB 테이블</th><th>저장 건수</th></tr></thead><tbody>{Object.entries(data.tables).map(([name, n]) => <tr key={name}><td>{name}</td><td>{n}</td></tr>)}</tbody></table></div>}
+    {tab === 'inventory' && <InventoryDevices api={api} />}
+  </section>;
 }

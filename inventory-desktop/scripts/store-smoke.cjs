@@ -2,6 +2,7 @@
 // Full integration test: real Spring Boot (memory H2), real Electron IPC and Windows safeStorage.
 const { app, BrowserWindow, safeStorage } = require('electron');
 const { spawn } = require('node:child_process');
+const { once } = require('node:events');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
@@ -33,6 +34,27 @@ async function api(route, method = 'GET', body, authenticated = true, timeout = 
   assert.ok(response.ok, `${method} ${route} failed with HTTP ${response.status}`);
   return data;
 }
+async function followWebLink(selector, destination) {
+  const href = await webWindow.webContents.executeJavaScript(`(async () => {
+    const until = Date.now() + 5000;
+    let link;
+    while (!(link = document.querySelector(${JSON.stringify(selector)}))) {
+      if (Date.now() > until) throw new Error('Navigation link did not mount');
+      await new Promise(resolve => setTimeout(resolve, 50));
+    }
+    return link.href;
+  })()`);
+  assert.equal(href, `${serverUrl}${destination}`);
+  await Promise.all([
+    once(webWindow.webContents, 'did-finish-load', { signal: AbortSignal.timeout(10000) }),
+    webWindow.webContents.executeJavaScript(`setTimeout(() => document.querySelector(${JSON.stringify(selector)}).click(), 50); void 0`),
+  ]);
+  assert.equal(webWindow.webContents.getURL(), href);
+}
+async function openShopAdmin() {
+  await webWindow.loadURL(`${serverUrl}/rolling.html`);
+  await followWebLink('a.admin-open', '/admin.html');
+}
 async function verifyCardImages() {
   const searches = [
     { id: 'IMAGE-OP08-001', label: 'onepiece', game: '원피스 카드게임', language: '한국어', query: 'OP08-001', host: 'onepiece-cardgame.kr' },
@@ -62,12 +84,9 @@ async function verifyCardImages() {
   assert.equal(unsupported.status, 'UNSUPPORTED_LANGUAGE');
   for (const { id, label, search, result, chosen } of records) {
   await api('/admin/products', 'POST', { product: { id, name: chosen.name, en: '', set: chosen.setName || '격리 검증', game: search.game, condition: 'NM', language: search.language, price: 1000, image: '', active: true }, stock: 1 });
-  // Reload the real site and edit the isolated product through the actual React admin form.
-  await webWindow.reload();
+  await openShopAdmin();
   await webWindow.webContents.executeJavaScript(`(async () => {
     const wait = async predicate => { const until=Date.now()+8000; while (!predicate()) { if(Date.now()>until) throw new Error('Image form did not mount'); await new Promise(resolve=>setTimeout(resolve,50)); } };
-    await wait(()=>document.querySelector('.admin-open'));
-    document.querySelector('.admin-open').click();
     await wait(()=>[...document.querySelectorAll('tr')].some(row=>row.textContent.includes(${JSON.stringify(id)})));
     const row=[...document.querySelectorAll('tr')].find(row=>row.textContent.includes(${JSON.stringify(id)}));
     [...row.querySelectorAll('button')].find(button=>button.textContent==='수정').click();
@@ -126,13 +145,15 @@ async function verifyCardImages() {
   assert.equal(saved.name, chosen.name);
   assert.equal(saved.price, 1000); assert.equal(saved.stock, 1);
   assert.equal(saved.language, search.language); assert.equal(saved.condition, 'NM');
+  await followWebLink('a.admin-control[href="/rolling.html"]', '/rolling.html');
   const displayed = await webWindow.webContents.executeJavaScript(`(async () => {
-    document.querySelector('dialog[open] .close')?.click();
-    await new Promise(resolve=>setTimeout(resolve,100));
-    const game=[...document.querySelectorAll('.game-tabs button')].find(button=>button.textContent===${JSON.stringify(search.game)});
-    if(!game)throw new Error('Storefront game tab missing');
-    game.click();
     const until=Date.now()+30000;
+    let game;
+    while (!(game=[...document.querySelectorAll('.game-tabs button')].find(button=>button.textContent===${JSON.stringify(search.game)}))) {
+      if(Date.now()>until)throw new Error('Storefront game tab missing');
+      await new Promise(resolve=>setTimeout(resolve,50));
+    }
+    game.click();
     let article;
     while (!(article=[...document.querySelectorAll('article.product')].find(row=>row.textContent.includes(${JSON.stringify(id)})))) {
       if(Date.now()>until)throw new Error('Saved product was not displayed');
@@ -162,10 +183,9 @@ async function invoke(method, args) {
 }
 async function verifyPurchaseLimits() {
   // Save through the actual web administrator form, then manage the same setting in the desktop.
-  await webWindow.reload();
+  await openShopAdmin();
   await webWindow.webContents.executeJavaScript(`(async()=>{
     const wait=async fn=>{const end=Date.now()+10000;while(!fn()){if(Date.now()>end)throw Error('Web limit form unavailable');await new Promise(r=>setTimeout(r,50));}};
-    await wait(()=>document.querySelector('.admin-open'));document.querySelector('.admin-open').click();
     await wait(()=>[...document.querySelectorAll('tr')].some(r=>r.textContent.includes('integration-card')));
     const row=[...document.querySelectorAll('tr')].find(r=>r.textContent.includes('integration-card'));
     [...row.querySelectorAll('button')].find(b=>b.textContent==='수정').click();
@@ -310,21 +330,15 @@ app.whenReady().then(async () => {
   // Exercise the actual administrator UI against the isolated server, without a production login.
   webWindow = new BrowserWindow({ show: false, width: 1280, height: 900, webPreferences: { contextIsolation: true, nodeIntegration: false, sandbox: true, offscreen: true, backgroundThrottling: false } });
   await webWindow.webContents.session.cookies.set({ url: serverUrl, name: 'swp_session', value: cookie, httpOnly: true, sameSite: 'lax' });
-  await webWindow.loadURL(serverUrl);
+  await openShopAdmin();
+  await followWebLink('nav.admin-tabs a[href="/admin.html?section=inventory"]', '/admin.html?section=inventory');
   await webWindow.webContents.executeJavaScript(`(async () => {
     const until = Date.now() + 5000;
-    while (!document.querySelector('.admin-open')) {
-      if (Date.now() > until) throw new Error('Administrator control did not mount');
+    let form;
+    while (!(form = document.querySelector('.inventory-pairing-form'))) {
+      if (Date.now() > until) throw new Error('Pairing form missing');
       await new Promise(resolve => setTimeout(resolve, 50));
     }
-    document.querySelector('.admin-open').click();
-    await new Promise(resolve => setTimeout(resolve, 150));
-    const devices = [...document.querySelectorAll('button')].find(b => b.textContent === '재고관리 앱');
-    if (!devices) throw new Error('Inventory device tab missing');
-    devices.click();
-    await new Promise(resolve => setTimeout(resolve, 150));
-    const form = document.querySelector('.inventory-pairing-form');
-    if (!form) throw new Error('Pairing form missing');
     form.requestSubmit();
   })()`);
   const pairing = await webWindow.webContents.executeJavaScript(`(async () => {
